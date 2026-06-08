@@ -47,6 +47,10 @@ struct InfoArgs {
     /// Path to the workspace whose info should be displayed (defaults to current directory)
     #[arg(short, long)]
     path: Option<String>,
+
+    /// Output results as JSON
+    #[arg(long, default_value = "false")]
+    json: bool,
 }
 
 #[derive(clap::Args)]
@@ -68,6 +72,10 @@ struct AskArgs {
     /// Stream the LLM response incrementally instead of waiting for full response
     #[arg(long, default_value = "false")]
     stream: bool,
+
+    /// Output results as JSON
+    #[arg(long, default_value = "false")]
+    json: bool,
 }
 
 #[derive(clap::Args)]
@@ -85,6 +93,10 @@ struct SymbolArgs {
     /// Path to the workspace whose index should be used (defaults to current directory)
     #[arg(short, long)]
     path: Option<String>,
+
+    /// Output results as JSON
+    #[arg(long, default_value = "false")]
+    json: bool,
 }
 
 fn main() -> Result<()> {
@@ -103,17 +115,33 @@ fn main() -> Result<()> {
             rust_rag_cli::index_workspace(&args.path)
         }
         Command::Reindex(args) => rust_rag_cli::reindex_workspace(&args.path),
-        Command::Info(args) => rust_rag_cli::show_info(args.path.as_deref()),
+        Command::Info(args) => {
+            if args.json {
+                rust_rag_cli::show_info_json(args.path.as_deref())
+            } else {
+                rust_rag_cli::show_info(args.path.as_deref())
+            }
+        }
         Command::Clean(args) => rust_rag_cli::clean_workspace(args.path.as_deref()),
-        Command::Ask(args) => {
+       Command::Ask(args) => {
             let workspace = args.path.as_deref();
-            if args.stream {
+            if args.json && args.stream {
+                tokio::runtime::Runtime::new()?.block_on(rust_rag_cli::ask_stream_json(&args.query, workspace))
+            } else if args.json {
+                rust_rag_cli::ask_json(&args.query, workspace)
+            } else if args.stream {
                 tokio::runtime::Runtime::new()?.block_on(rust_rag_cli::ask_stream(&args.query, workspace))
             } else {
                 rust_rag_cli::ask(&args.query, workspace)
             }
         }
        Command::Chat(args) => return rust_rag_tui::run(args.path.as_deref()),
-        Command::Symbol(args) => rust_rag_cli::search_symbol(&args.query, args.path.as_deref()),
+        Command::Symbol(args) => {
+            if args.json {
+                rust_rag_cli::search_symbol_json(&args.query, args.path.as_deref())
+            } else {
+                rust_rag_cli::search_symbol(&args.query, args.path.as_deref())
+            }
+        }
     }
 }

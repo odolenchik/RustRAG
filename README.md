@@ -73,6 +73,9 @@ This runs the full pipeline: AST extraction → embedding → vector store creat
 # Single query (returns LLM answer)
 ./target/release/rust-rag ask "How does the call graph work?" -p /workspace/path
 
+# JSON output for scripting
+./target/release/rust-rag ask --json "How does the call graph work?" -p /workspace/path
+
 # Interactive TUI chat session
 ./target/release/rust-rag chat -p /workspace
 ```
@@ -95,9 +98,10 @@ RUSRAG_WORKSPACE=/workspace/path ./target/release/rust-rag-serve mcp
 | `reindex <path>` | Remove old `.rustrag/` directory, then run full indexing pipeline | `rust-rag reindex /workspace` |
 | `info [-p path]` | Show metadata: total indexed chunks and unique files list | `rust-rag info -p /workspace` |
 | `clean [-p path]` | Remove `.rustrag/` directory entirely | `rust-rag clean -p /workspace` |
-| `ask <query> [-p path] [--stream]` | Ask a question; returns LLM answer with cited source locations. Use --stream for incremental streaming output | `rust-rag ask "Where is config loaded?" --stream` |
+| `ask <query> [-p path] [--stream] [--json]` | Ask a question; returns LLM answer with cited source locations. Use --stream for incremental streaming output, --json for structured JSON output suitable for scripting | `rust-rag ask "Where is config loaded?" --json` |
 | `chat [-p path]` | Interactive TUI chat session with scrollable results and LLM answers (supports live streaming) | `rust-rag chat -p /workspace/path` |
-| `symbol <name> [-p path]` | Search for a symbol by name in the indexed workspace, showing kind, file path and line number | `rust-rag symbol "search_symbol" -p /workspace` |
+| `symbol <name> [-p path] [--json]` | Search for a symbol by name in the indexed workspace, showing kind, file path and line number. Use --json for structured output | `rust-rag symbol "search_symbol" --json` |
+| `info [-p path] [--json]` | Show metadata: total indexed chunks and unique files list. Use --json for structured output | `rust-rag info --json` |
 
 ## Server API
 

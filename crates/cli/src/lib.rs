@@ -317,6 +317,162 @@ pub async fn ask_stream(query: &str, workspace_root: Option<&str>) -> Result<()>
     Ok(())
 }
 
+/// Run the ask pipeline with JSON output.
+pub fn ask_json(query: &str, workspace_root: Option<&str>) -> Result<()> {
+    let ws = if let Some(path) = workspace_root {
+        std::path::PathBuf::from(path)
+    } else {
+        std::env::current_dir()?
+    };
+
+    let cfg = rust_rag_core::config::Config::load(&ws).unwrap_or_default();
+    let top_k: usize = cfg.llm_config().top_k;
+
+    let store_path = ws.join(".rustrag");
+    let index_path = store_path.join("index.jsonl");
+
+    if !index_path.exists() {
+        anyhow::bail!("No index found. Run `rust-rag index <path>` first.");
+    }
+
+    let embedding: Vec<f32> = rust_rag_core::embedding::embed(query)?;
+    let store = rust_rag_core::vector_store::VectorStore::open(&store_path)?;
+    let results = store.hybrid_search(&embedding, query, top_k, 0.7, None)?;
+
+    // Build context from hybrid search results
+    let mut context_parts: Vec<String> = Vec::new();
+    for r in &results {
+        context_parts.push(format!(
+            "[[{}:{}]]\n{}",
+            r.file_path.display(), r.line_start, r.text
+        ));
+    }
+
+    let context = if context_parts.is_empty() {
+        "No relevant code chunks found.".to_string()
+    } else {
+        context_parts.join("\n\n")
+    };
+
+    // Build the prompt for LLM
+    let system_prompt = "You are a Rust code analysis assistant. Answer questions based on the provided code snippets. Always cite file paths and line numbers when referencing code.";
+    let user_message = format!(
+        "Question: {}\n\nRelevant code:\n{}",
+        query, context
+    );
+
+    let response = rust_rag_llm::ollama_client::LlmClient::chat(&system_prompt, &user_message)?;
+
+    // Build citation list from results
+    let citations: Vec<serde_json::Value> = results.iter().map(|r| {
+        serde_json::json!({
+            "file_path": r.file_path.to_string_lossy(),
+            "line_start": r.line_start,
+            "line_end": r.line_end,
+            "module_name": r.module_name,
+            "symbol_kind": match &r.symbol_kind {
+                Some(sk) => serde_json::to_value(sk).unwrap_or_else(|_| serde_json::json!("<unknown>")),
+                None => serde_json::json!("<unknown>"),
+            },
+            "text": r.text.clone(),
+        })
+    }).collect();
+
+    let output = serde_json::json!({
+        "query": query,
+        "answer": response,
+        "citations": citations,
+        "relevant_chunks_count": results.len(),
+    });
+
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
+/// Run the ask pipeline with streaming output and JSON.
+pub async fn ask_stream_json(query: &str, workspace_root: Option<&str>) -> Result<()> {
+    let ws = if let Some(path) = workspace_root {
+        std::path::PathBuf::from(path)
+    } else {
+        std::env::current_dir()?
+    };
+
+    let cfg = rust_rag_core::config::Config::load(&ws).unwrap_or_default();
+    let top_k: usize = cfg.llm_config().top_k;
+
+    let store_path = ws.join(".rustrag");
+    let index_path = store_path.join("index.jsonl");
+
+    if !index_path.exists() {
+        anyhow::bail!("No index found. Run `rust-rag index <path>` first.");
+    }
+
+    let embedding: Vec<f32> = rust_rag_core::embedding::embed(query)?;
+    let store = rust_rag_core::vector_store::VectorStore::open(&store_path)?;
+    let results = store.hybrid_search(&embedding, query, top_k, 0.7, None)?;
+
+    // Build context from hybrid search results
+    let mut context_parts: Vec<String> = Vec::new();
+    for r in &results {
+        context_parts.push(format!(
+            "[[{}:{}]]\n{}",
+            r.file_path.display(), r.line_start, r.text
+        ));
+    }
+
+    let context = if context_parts.is_empty() {
+        "No relevant code chunks found.".to_string()
+    } else {
+        context_parts.join("\n\n")
+    };
+
+    // Build the prompt for LLM
+    let system_prompt = "You are a Rust code analysis assistant. Answer questions based on the provided code snippets. Always cite file paths and line numbers when referencing code.";
+    let user_message = format!(
+        "Question: {}\n\nRelevant code:\n{}",
+        query, context
+    );
+
+    // Collect streamed response
+    let client = rust_rag_llm::ollama_client::LlmClient::default();
+    let mut stream = client.complete_stream_chunks(system_prompt, &user_message);
+    let mut collected = String::new();
+    while let Some(chunk) = stream.next().await {
+        match chunk {
+            Ok(text) => collected.push_str(&text),
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                break;
+            }
+        }
+    }
+
+    // Build citation list from results
+    let citations: Vec<serde_json::Value> = results.iter().map(|r| {
+        serde_json::json!({
+            "file_path": r.file_path.to_string_lossy(),
+            "line_start": r.line_start,
+            "line_end": r.line_end,
+            "module_name": r.module_name,
+            "symbol_kind": match &r.symbol_kind {
+                Some(sk) => serde_json::to_value(sk).unwrap_or_else(|_| serde_json::json!("<unknown>")),
+                None => serde_json::json!("<unknown>"),
+            },
+            "text": r.text.clone(),
+        })
+    }).collect();
+
+    let output = serde_json::json!({
+        "query": query,
+        "answer": collected,
+        "citations": citations,
+        "relevant_chunks_count": results.len(),
+    });
+
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
 /// Re-index a workspace: delete old index, then run full indexing pipeline.
 pub fn reindex_workspace(path: &str) -> Result<()> {
     let workspace_root = std::path::PathBuf::from(path);
@@ -369,6 +525,47 @@ pub fn show_info(workspace_path: Option<&str>) -> Result<()> {
         println!("  - {}", file.display());
     }
 
+    Ok(())
+}
+
+/// Show metadata about the indexed workspace with JSON output.
+pub fn show_info_json(workspace_path: Option<&str>) -> Result<()> {
+    let ws = if let Some(p) = workspace_path {
+        std::path::PathBuf::from(p)
+    } else {
+        std::env::current_dir()?
+    };
+
+    let store_path = ws.join(".rustrag");
+    if !store_path.exists() {
+        println!("No index found at {}. Run `rust-rag index <path>` first.", store_path.display());
+        return Ok(());
+    }
+
+    let index_path = store_path.join("index.jsonl");
+    let content = std::fs::read_to_string(&index_path)?;
+    let total_chunks: usize = content.lines().filter(|l| !l.trim().is_empty()).count();
+
+    // Count unique files
+    let mut unique_files: Vec<String> = Vec::new();
+    for line in content.lines().filter(|l| !l.trim().is_empty()) {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
+            if let Some(fp) = value["file_path"].as_str() {
+                unique_files.push(fp.to_string());
+            }
+        }
+    }
+    unique_files.sort();
+    unique_files.dedup();
+
+    let output = serde_json::json!({
+        "index_path": store_path.display().to_string(),
+        "total_chunks": total_chunks,
+        "unique_files_count": unique_files.len(),
+        "files": unique_files,
+    });
+
+    println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
 }
 
@@ -469,5 +666,63 @@ pub fn search_symbol(query: &str, workspace_root: Option<&str>) -> Result<()> {
         );
     }
 
+    Ok(())
+}
+
+/// Search for a symbol by name in the indexed workspace with JSON output.
+pub fn search_symbol_json(query: &str, workspace_root: Option<&str>) -> Result<()> {
+    let ws = if let Some(path) = workspace_root {
+        std::path::PathBuf::from(path)
+    } else {
+        std::env::current_dir()?
+    };
+
+    let store_path = ws.join(".rustrag");
+    let index_path = store_path.join("index.jsonl");
+
+    if !index_path.exists() {
+        anyhow::bail!("No index found. Run `rust-rag index <path>` first.");
+    }
+
+    let content = std::fs::read_to_string(&index_path)?;
+    let mut matches: Vec<serde_json::Value> = Vec::new();
+
+    for line in content.lines().filter(|l| !l.trim().is_empty()) {
+        let doc: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        // Match against module_name (which includes the symbol name) and text content
+        let module_name = doc["module_name"].as_str().unwrap_or("");
+        let text = doc["text"].as_str().unwrap_or("");
+
+        if module_name.to_lowercase().contains(&query.to_lowercase())
+            || text.contains(query)
+        {
+            matches.push(doc);
+        }
+    }
+
+    // Deduplicate by document ID
+    let mut seen_ids: std::collections::HashSet<String> = Default::default();
+    matches.retain(|doc| {
+        let id = doc["id"].as_str().unwrap_or("").to_string();
+        if seen_ids.contains(&id) { false } else { seen_ids.insert(id); true }
+    });
+
+    // Sort by file path for consistent output
+    matches.sort_by(|a, b| a["file_path"]
+        .as_str()
+        .unwrap_or("")
+        .cmp(&b["file_path"].as_str().unwrap_or("")));
+
+    let output = serde_json::json!({
+        "query": query,
+        "total_results": matches.len(),
+        "results": matches,
+    });
+
+    println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
 }
