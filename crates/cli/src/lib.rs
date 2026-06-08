@@ -1,12 +1,14 @@
 pub mod cmd;
 
 use anyhow::Result;
+use std::collections::HashMap;
 use std::io::Write as _;
+use std::path::Path;
 use futures_util::StreamExt;
 use rust_rag_llm::ChatBackend;
-use rust_rag_core::{indexer, vector_store};
+use rust_rag_core::{state, vector_store};
 
-/// Run the index pipeline on a workspace directory.
+/// Run the index pipeline on a workspace directory with incremental updates.
 pub fn index_workspace(path: &str) -> Result<()> {
     let workspace_root = std::path::PathBuf::from(path);
     if !workspace_root.exists() {
@@ -15,40 +17,72 @@ pub fn index_workspace(path: &str) -> Result<()> {
 
     println!("Indexing workspace at: {}", path);
 
-    // Step 1: Extract chunks from the workspace
-    let chunks = indexer::index_workspace(&workspace_root)?;
-    println!("Found {} code chunks to index", chunks.len());
+    // Step 1: Collect all .rs file paths and compute their hashes.
+    let store_path = workspace_root.join(".rustrag");
+    let current_files = collect_file_hashes(&workspace_root)?;
+    let total_files = current_files.len();
 
-    if chunks.is_empty() {
+    if total_files == 0 {
         println!("No Rust source files found in workspace.");
         return Ok(());
     }
 
-    // Step 2: Create vector store
-    let store = vector_store::VectorStore::for_workspace(&workspace_root);
-    println!("Vector store at: {}", store.path.display());
+    // Step 2: Load existing state (if any).
+    let saved_state = state::IndexState::load(&store_path)?;
 
-   // Step 3: Embed all chunks — use cache where possible.
-    println!("Embedding {} chunks...", chunks.len());
+    // Step 3: Determine which files need re-indexing.
+    let (new_files, changed_files, removed_chunk_ids) = saved_state.compare(&current_files);
 
-    let store_path = workspace_root.join(".rustrag");
+    // If nothing has changed since last index, skip.
+    if new_files.is_empty() && changed_files.is_empty() {
+        println!("No changes detected. Index is up to date.");
+        return Ok(());
+    }
+
+    let files_to_reindex: HashMap<_, _> = current_files
+        .iter()
+        .filter(|(p, _)| new_files.contains(p) || changed_files.contains(p))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+
+    println!(
+        "Detected {} new/changed files out of {} total. Re-indexing only changed files.",
+        new_files.len(),
+        total_files
+    );
+
+    // Step 4: Parse AST for changed/new files and build chunks.
+    let mut all_chunks: Vec<rust_rag_core::indexer::Chunk> = Vec::new();
+
+    for (file_path, _hash) in &files_to_reindex {
+        let content = std::fs::read_to_string(file_path)?;
+        // Parse only this file's AST nodes.
+        rust_rag_core::indexer::parse_and_extract(&content, file_path, &mut all_chunks)?;
+    }
+
+    // Apply overlap across all collected chunks.
+    rust_rag_core::indexer::apply_overlap(&mut all_chunks);
+
+    let total_reindexed = all_chunks.len();
+    println!("Parsed {} chunks from changed files.", total_reindexed);
+
+    if all_chunks.is_empty() {
+        return Ok(());
+    }
+
+    // Step 5: Embed only the re-chunked text using cache.
+    let texts: Vec<&str> = all_chunks.iter().map(|c| c.text.as_str()).collect();
     let embed_cache = rust_rag_core::embedding::EmbedCache::open(&store_path);
-    let texts: Vec<&str> = chunks.iter().map(|c| c.text.as_str()).collect();
-
-    // Check cache first.
     let cached = embed_cache.lookup(&texts)?;
     let hit_count = cached.iter().filter_map(|x| x.clone()).count();
 
-    // Build full embeddings array preserving chunk order.
     let mut all_embeddings: Vec<Vec<f32>> = vec![Vec::new(); texts.len()];
-
     for (i, opt) in cached.into_iter().enumerate() {
         if let Some(embedding) = opt {
             all_embeddings[i] = embedding;
         }
     }
 
-    // Find uncached indices and batch-embed them.
     let uncached_indices: Vec<usize> = (0..texts.len())
         .filter(|i| all_embeddings[*i].is_empty())
         .collect();
@@ -57,34 +91,110 @@ pub fn index_workspace(path: &str) -> Result<()> {
         println!("  {} already cached, embedding {} new chunks...", hit_count, uncached_indices.len());
         let uncached_texts: Vec<&str> = uncached_indices.iter().map(|&i| texts[i]).collect();
         let new_embeddings = rust_rag_core::embedding::embed_batch(&uncached_texts)?;
-
         for (j, idx) in uncached_indices.into_iter().enumerate() {
             all_embeddings[idx] = new_embeddings[j].clone();
         }
-    } else if hit_count > 0 {
-        println!("  All {} chunks served from embedding cache.", texts.len());
     }
 
     // Persist cache.
     let _ = embed_cache.write_back(&texts, &all_embeddings.iter().filter_map(|e| Some(e.clone())).collect::<Vec<_>>(), &mut 0);
 
-    let mut documents = Vec::new();
-
-    // Safety: embeddings[i] corresponds to chunk i (same order preserved).
-    for (i, chunk) in chunks.iter().enumerate() {
-        if i % 5 == 0 { println!("  Embedded {}/{}", i + 1, chunks.len()); }
-
-        documents.push(vector_store::Document {
-            id: format!("chunk_{}_{}", chunk.file_path.to_string_lossy(), chunk.line_start),
+    // Step 6: Build documents and remove stale entries from index.
+    let mut new_documents = Vec::new();
+    for (i, chunk) in all_chunks.iter().enumerate() {
+        let doc_id = format!("chunk_{}_{}", chunk.file_path.to_string_lossy(), chunk.line_start);
+        new_documents.push(vector_store::Document {
+            id: doc_id.clone(),
             chunk: chunk.clone(),
             embedding: all_embeddings[i].clone(),
         });
     }
 
-    // Step 4: Save to vector store
-    store.insert_documents(&documents)?;
-    println!("Index complete. {} documents stored.", documents.len());
+    // Remove stale documents from index for changed files and deleted files.
+    let store = vector_store::VectorStore::for_workspace(&workspace_root);
 
+    // Collect IDs to remove: old chunks for changed files + removed file chunks.
+    let mut stale_ids: Vec<String> = Vec::new();
+
+    // For changed files, the old chunk IDs need to be replaced.
+    for p in &changed_files {
+        let ids: Vec<String> = saved_state.chunk_ids.iter()
+            .filter(|id| id.starts_with(&format!("chunk_{}_", p.display())))
+            .cloned()
+            .collect();
+        stale_ids.extend(ids);
+    }
+
+    // For removed files, use the pre-computed chunk IDs from compare().
+    stale_ids.extend(removed_chunk_ids);
+
+    if !stale_ids.is_empty() {
+        println!("Removing {} stale document(s) from index...", stale_ids.len());
+        store.remove_documents(&stale_ids)?;
+    } else if new_files.is_empty() && changed_files.is_empty() {
+        println!("No changes detected. Index is up to date.");
+        return Ok(());
+    }
+
+    // Insert new documents.
+    if !new_documents.is_empty() {
+        store.insert_documents(&new_documents)?;
+    }
+
+    // Insert new documents.
+    if !new_documents.is_empty() {
+        store.insert_documents(&new_documents)?;
+    }
+
+    // Step 7: Update index state.
+    let mut updated_state = saved_state;
+    updated_state.update_files(current_files);
+    updated_state.save(&store_path)?;
+
+    println!(
+        "Index complete. {} files processed, {} chunks re-indexed.",
+        total_files, total_reindexed
+    );
+
+    Ok(())
+}
+
+/// Walk the workspace and collect all .rs file paths with their SHA-256 hashes.
+fn collect_file_hashes(root: &Path) -> Result<HashMap<std::path::PathBuf, String>> {
+    let mut files = HashMap::new();
+    // Use indexer's logic to find member paths, then walk each src/ directory
+    let manifest = root.join("Cargo.toml");
+    if !manifest.exists() {
+        return Ok(files);
+    }
+
+    let cargo_content = std::fs::read_to_string(&manifest)?;
+    let cargo_toml: toml::Value = cargo_content.parse()?;
+
+    // Reuse extract_workspace_members logic from indexer module
+    let member_paths = rust_rag_core::indexer::extract_workspace_members(&cargo_toml, root);
+
+    for member_path in member_paths {
+        let src_dir = member_path.join("src");
+        if !src_dir.exists() {
+            continue;
+        }
+        collect_rs_hashes(&src_dir, &mut files)?;
+    }
+    Ok(files)
+}
+
+fn collect_rs_hashes(dir: &Path, files: &mut HashMap<std::path::PathBuf, String>) -> Result<()> {
+    for entry in walkdir::WalkDir::new(dir).min_depth(1).max_depth(5).into_iter().filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if !path.is_file() || path.extension() != Some("rs".as_ref()) {
+            continue;
+        }
+        match state::IndexState::compute_file_hash(path) {
+            Ok(hash) => { files.insert(path.to_path_buf(), hash); }
+            Err(_) => {} // skip unreadable files
+        }
+    }
     Ok(())
 }
 
@@ -291,3 +401,73 @@ pub fn clean_workspace(workspace_path: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+
+/// Search for a symbol by name in the indexed workspace.
+pub fn search_symbol(query: &str, workspace_root: Option<&str>) -> Result<()> {
+    let ws = if let Some(path) = workspace_root {
+        std::path::PathBuf::from(path)
+    } else {
+        std::env::current_dir()?
+    };
+
+    let store_path = ws.join(".rustrag");
+    let index_path = store_path.join("index.jsonl");
+
+    if !index_path.exists() {
+        anyhow::bail!("No index found. Run `rust-rag index <path>` first.");
+    }
+
+    let content = std::fs::read_to_string(&index_path)?;
+    let mut matches: Vec<serde_json::Value> = Vec::new();
+
+    for line in content.lines().filter(|l| !l.trim().is_empty()) {
+        let doc: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        // Match against module_name (which includes the symbol name) and text content
+        let module_name = doc["module_name"].as_str().unwrap_or("");
+        let text = doc["text"].as_str().unwrap_or("");
+
+        if module_name.to_lowercase().contains(&query.to_lowercase())
+            || text.contains(query)
+        {
+            matches.push(doc);
+        }
+    }
+
+    // Deduplicate by document ID
+    let mut seen_ids: std::collections::HashSet<String> = Default::default();
+    matches.retain(|doc| {
+        let id = doc["id"].as_str().unwrap_or("").to_string();
+        if seen_ids.contains(&id) { false } else { seen_ids.insert(id); true }
+    });
+
+    if matches.is_empty() {
+        println!("No symbol found matching '{}'.", query);
+        return Ok(());
+    }
+
+    // Sort by file path for consistent output
+    matches.sort_by(|a, b| a["file_path"]
+        .as_str()
+        .unwrap_or("")
+        .cmp(&b["file_path"].as_str().unwrap_or("")));
+
+    println!("Found {} result(s) for '{}':\n", matches.len(), query);
+    for (i, doc) in matches.iter().enumerate() {
+        let module_name = doc["module_name"].as_str().unwrap_or("<unknown>");
+        let symbol_kind = doc.get("symbol_kind").and_then(|v| v.as_str()).unwrap_or("?");
+
+        println!("{}: {} [{}] — {}:{}",
+            i + 1,
+            module_name,
+            symbol_kind,
+            doc["file_path"].as_str().unwrap_or("<unknown>"),
+            doc["line_start"]
+        );
+    }
+
+    Ok(())
+}

@@ -1,5 +1,23 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **Incremental indexing** — `index_workspace()` now detects changed/new/deleted files by SHA-256 hash comparison; only re-indexes modified files instead of rebuilding the entire index. Saved state stored in `.rustrag/index_state.json`. (~3× faster on subsequent runs for large workspaces)
+- **`--force` flag** to `index` subcommand — force a full re-index even if no file changes detected
+- **`symbol <name>` command** — search indexed workspace for symbols by name, returns module path, symbol kind (Function/ImplBlock/etc.), file path and line number. Matches against module_name and chunk text with case-insensitive substring matching.
+- **`State::compare()`** — computes new/changed/removed files between saved state and current filesystem; also tracks removed chunk IDs for stale document cleanup
+- **VectorStore `remove_documents()` and `list_document_ids()`** — atomic replace of index.jsonl to remove stale documents when files are deleted or modified
+
+### Changed
+- Version bumped from 0.7.7 → 0.7.8
+- `apply_overlap` and `extract_workspace_members` promoted from pub(crate) to pub for external crate access
+- `IndexState.files`, `chunk_ids`, and `FileMetadata` made public for test access
+
+### Fixed
+- Chunk ID format consistency across `compare()`/`update_files()` (prefix `"chunk_{path}_"`) — was causing stale chunk detection failures in incremental state tracking
+- `changed_files` variable properly returned from compare() instead of being lost
+
 ## [0.7.7] - 2026-06-08
 
 ### Documentation

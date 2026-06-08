@@ -63,6 +63,58 @@ impl VectorStore {
         Ok(())
     }
 
+    /// Remove documents matching the given IDs from index.jsonl (atomic replace).
+    pub fn remove_documents(&self, ids: &[String]) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let id_set: std::collections::HashSet<&str> = ids.iter().map(|s| s.as_str()).collect();
+
+        let index_path = self.path.join("index.jsonl");
+        if !index_path.exists() {
+            return Ok(());
+        }
+
+        // Read all lines, filter out matching IDs
+        let content = std::fs::read_to_string(&index_path)?;
+        let mut kept_lines: Vec<String> = Vec::new();
+        for line in content.lines().filter(|l| !l.trim().is_empty()) {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
+                if let Some(doc_id) = value["id"].as_str() {
+                    if id_set.contains(doc_id) {
+                        continue; // remove this document
+                    }
+                }
+            }
+            kept_lines.push(line.to_string());
+        }
+
+        // Atomic replace: write to temp, then rename
+        let tmp_path = self.path.join("index.jsonl.tmp");
+        std::fs::write(&tmp_path, kept_lines.join("\n"))?;
+        std::fs::rename(&tmp_path, &index_path)?;
+
+        Ok(())
+    }
+
+    /// List all document IDs currently stored in the index.
+    pub fn list_document_ids(&self) -> Result<Vec<String>> {
+        let index_path = self.path.join("index.jsonl");
+        if !index_path.exists() {
+            return Ok(Vec::new());
+        }
+        let content = std::fs::read_to_string(&index_path)?;
+        let mut ids = Vec::new();
+        for line in content.lines().filter(|l| !l.trim().is_empty()) {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
+                if let Some(doc_id) = value["id"].as_str() {
+                    ids.push(doc_id.to_string());
+                }
+            }
+        }
+        Ok(ids)
+    }
+
     /// Search by embedding vector. Returns top-k results with relevance scores.
     pub fn search_by_embedding(&self, query_vec: &[f32], top_k: usize) -> Result<Vec<SearchResult>> {
         self.hybrid_search_internal(query_vec, "", top_k, 1.0, None, true)

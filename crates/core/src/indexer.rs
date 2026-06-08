@@ -44,7 +44,7 @@ pub enum SymbolKind {
 /// Expands boundaries by including adjacent lines from neighboring chunks,
 /// so context at chunk boundaries is preserved for the LLM.
 #[allow(dead_code)] // called internally by index_workspace; pub(crate) for test access
-pub(crate) fn apply_overlap(chunks: &mut Vec<Chunk>) {
+pub fn apply_overlap(chunks: &mut Vec<Chunk>) {
     let overlap = crate::config::Config::find()
         .ok()
         .map(|c| c.embedding.chunk_overlap)
@@ -179,7 +179,7 @@ pub fn index_workspace(root: &Path) -> Result<Vec<Chunk>> {
     Ok(chunks)
 }
 
-fn extract_workspace_members(cargo: &toml::Value, root: &Path) -> Vec<PathBuf> {
+pub fn extract_workspace_members(cargo: &toml::Value, root: &Path) -> Vec<PathBuf> {
     let mut paths = Vec::new();
 
     if let Some(workspace) = cargo.get("workspace") {
@@ -220,7 +220,7 @@ fn collect_rs_files(dir: &Path, chunks: &mut Vec<Chunk>) -> Result<()> {
     Ok(())
 }
 
-fn parse_and_extract(content: &str, file_path: &Path, chunks: &mut Vec<Chunk>) -> Result<()> {
+pub fn parse_and_extract(content: &str, file_path: &Path, chunks: &mut Vec<Chunk>) -> Result<()> {
     let mut parser = tree_sitter::Parser::new();
     parser
         .set_language(&tree_sitter_rust::LANGUAGE.into())

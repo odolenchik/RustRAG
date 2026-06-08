@@ -865,3 +865,164 @@ fn test_apply_overlap_scales_with_config() {
         "Larger overlap (5) should produce more text than smaller overlap (1). Got {} vs {}",
         total_large, total_small);
 }
+
+// ---------------------------------------------------------------------------
+// IndexState / incremental indexing tests
+// ---------------------------------------------------------------------------
+
+/// Helper: create a test workspace with two Rust files and return the state dir path.
+fn make_incremental_test_workspace() -> (tempfile::TempDir, std::path::PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let state_path = dir.path().join(".rustrag");
+
+    // Cargo.toml
+    std::fs::write(
+        dir.path().join("Cargo.toml"),
+        r#"[package]
+name = "incremental_test"
+version = "0.1.0"
+edition = "2021""#,
+    ).unwrap();
+
+    // File 1: lib.rs — will be modified between runs
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    std::fs::write(
+        dir.path().join("src/lib.rs"),
+        r#"pub fn first() -> i32 { 1 }"#,
+    ).unwrap();
+
+    // File 2: other.rs — will stay unchanged between runs
+    std::fs::write(
+        dir.path().join("src/other.rs"),
+        r#"pub fn second() -> i32 { 2 }"#,
+    ).unwrap();
+
+    (dir, state_path)
+}
+
+#[test]
+fn test_incremental_detects_changes() {
+    let (dir, _state_path) = make_incremental_test_workspace();
+
+    // Build initial state: simulate that lib.rs has an old hash
+    let mut state = rust_rag_core::state::IndexState::new();
+    let lib_path = dir.path().join("src/lib.rs");
+    let other_path = dir.path().join("src/other.rs");
+
+    // Compute current hashes (actual)
+    let actual_lib_hash = rust_rag_core::state::IndexState::compute_file_hash(&lib_path).unwrap();
+    let actual_other_hash = rust_rag_core::state::IndexState::compute_file_hash(&other_path).unwrap();
+
+    // Simulate old state where lib.rs had a different hash
+    state.files.insert(
+        lib_path.clone(),
+        rust_rag_core::state::FileMetadata { sha256: "old_hash_for_lib".to_string() },
+    );
+    state.files.insert(
+        other_path.clone(),
+        rust_rag_core::state::FileMetadata { sha256: actual_other_hash.clone() },
+    );
+
+    // Build current files map (actual hashes)
+    let mut current = HashMap::new();
+    current.insert(lib_path.clone(), actual_lib_hash);
+    current.insert(other_path.clone(), actual_other_hash);
+
+    let (_, changed_files, _) = state.compare(&current);
+
+    assert!(changed_files.contains(&lib_path), "lib.rs should be detected as changed");
+    assert!(!changed_files.contains(&other_path), "unchanged other.rs should not appear in changed");
+}
+
+#[test]
+fn test_incremental_skips_unchanged() {
+    let (dir, _state_path) = make_incremental_test_workspace();
+
+    let lib_path = dir.path().join("src/lib.rs");
+    let other_path = dir.path().join("src/other.rs");
+
+    // Compute current hashes
+    let fresh_lib = rust_rag_core::state::IndexState::compute_file_hash(&lib_path).unwrap();
+    let fresh_other = rust_rag_core::state::IndexState::compute_file_hash(&other_path).unwrap();
+
+    // Build state where both files have matching hashes → nothing changed
+    let mut state = rust_rag_core::state::IndexState::new();
+    state.files.insert(lib_path.clone(), rust_rag_core::state::FileMetadata { sha256: fresh_lib.clone() });
+    state.files.insert(other_path.clone(), rust_rag_core::state::FileMetadata { sha256: fresh_other.clone() });
+
+    // Build current map with the same hashes → nothing should be detected as changed
+    let mut current = HashMap::new();
+    current.insert(lib_path, fresh_lib);
+    current.insert(other_path, fresh_other);
+
+    let (_, changed, _) = state.compare(&current);
+    assert!(changed.is_empty(), "No files should be reported as changed when hashes match");
+}
+
+#[test]
+fn test_incremental_removes_deleted() {
+    let (dir, _state_path) = make_incremental_test_workspace();
+
+    let lib_path = dir.path().join("src/lib.rs");
+    let other_path = dir.path().join("src/other.rs");
+
+    // Simulate state where both files were previously indexed
+    let actual_lib_hash = rust_rag_core::state::IndexState::compute_file_hash(&lib_path).unwrap();
+    let actual_other_hash = rust_rag_core::state::IndexState::compute_file_hash(&other_path).unwrap();
+
+    let mut state = rust_rag_core::state::IndexState::new();
+    state.files.insert(lib_path.clone(), rust_rag_core::state::FileMetadata { sha256: actual_lib_hash });
+    state.files.insert(other_path.clone(), rust_rag_core::state::FileMetadata { sha256: actual_other_hash });
+    // Add chunk IDs that would belong to the deleted file (other.rs)
+  state.chunk_ids.push(format!("chunk_{}_", other_path.display()));
+
+    // Current files: only lib.rs exists, other.rs is "deleted"
+    let mut current = HashMap::new();
+    current.insert(lib_path.clone(), rust_rag_core::state::IndexState::compute_file_hash(&lib_path).unwrap());
+
+    let (_, _, removed_ids) = state.compare(&current);
+
+    assert!(removed_ids.contains(&format!("chunk_{}_", other_path.display())),
+        "Should detect that other.rs was deleted and return its chunk IDs");
+}
+
+#[test]
+fn test_remove_documents_from_vector_store() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = rust_rag_core::vector_store::VectorStore::open(dir.path()).expect("should create store");
+
+    // Insert 3 documents
+    for i in 1..=3 {
+        let chunk = Chunk {
+            file_path: PathBuf::from(format!("file{}.rs", i)),
+            line_start: 1,
+            line_end: 5,
+            module_name: "test".into(),
+            symbol_kind: SymbolKind::Function,
+            text: format!("fn test{}() {{}}", i),
+        };
+        let doc = rust_rag_core::vector_store::Document {
+            id: format!("doc_{}", i),
+            chunk,
+            embedding: vec![0.1; 384],
+        };
+        store.insert_documents(&[doc]).expect("should insert");
+    }
+
+    // Verify all 3 are present
+    let ids_before = store.list_document_ids().expect("should list IDs");
+    assert_eq!(ids_before.len(), 3);
+
+    // Remove doc_2
+    store.remove_documents(&["doc_2".to_string()]).expect("should remove");
+
+    // Verify only doc_1 and doc_3 remain
+    let ids_after = store.list_document_ids().expect("should list IDs after removal");
+    assert_eq!(ids_after.len(), 2);
+    assert!(ids_after.contains(&"doc_1".to_string()));
+    assert!(!ids_after.contains(&"doc_2".to_string()));
+    assert!(ids_after.contains(&"doc_3".to_string()));
+}
+
+// Re-export HashMap for tests that need it.
+use std::collections::HashMap;

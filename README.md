@@ -1,4 +1,4 @@
-# RustRAG v0.7.7
+# RustRAG v0.7.8
 
 **Local RAG for Rust codebases — full offline embeddings, hybrid BM25+vector search, MCP server.**
 
@@ -15,6 +15,8 @@ A self-hosted Retrieval-Augmented Generation tool built specifically for analyzi
 - **MCP server** — Model Context Protocol stdio server exposing `rag_search` and `rag_query` tools for AI coding agents (Claude Desktop, Cursor, Windsurf, etc.)
 - **Interactive TUI** — ratatui-based terminal interface with scrollable results, real-time streaming LLM answers, and keyboard navigation
 - **HTTP API + CORS** — axum server with `/search`, `/query`, `/query/stream`, and `/status` endpoints; SSE streaming support; cross-origin support for browser clients
+- **Incremental indexing** — SHA-256-based file change detection; only re-indexes changed/new/deleted files on subsequent runs. Stored in `.rustrag/index_state.json` for persistence across invocations.
+- **Symbol search** — `rust-rag symbol <name>` finds symbols by name across the index, showing kind (Function/ImplBlock/etc.), file path and line number.
 - **Configurable via TOML** — `.rustrag.toml` at workspace root controls embedding model path, LLM endpoint/model, top_k, chunk overlap
 
 ## Architecture
@@ -23,8 +25,8 @@ Five independent crates in a Cargo workspace:
 
 | Crate | Purpose |
 |-------|---------|
-| `rust-rag-core` | Core engine: indexing (tree-sitter), embedding (fastembed/ONNX), vector store (JSONL + BM25), retrieval, call graph analysis, config |
-| `rust-rag-cli` | CLI binary (`rust-rag`) with subcommands for index/ask/chat/reindex/info/clean |
+| `rust-rag-core` | Core engine: indexing (tree-sitter), embedding (fastembed/ONNX), vector store (JSONL + BM25), retrieval, call graph analysis, incremental state management, config |
+| `rust-rag-cli` | CLI binary (`rust-rag`) with subcommands for index/ask/chat/reindex/info/clean/symbol |
 | `rust-rag-server` | HTTP API server (axum) and MCP stdio server; exposes search, query, and status endpoints |
 | `rust-rag-llm` | LLM client abstraction supporting OpenAI-compatible / Ollama backends with SSE streaming support |
 | `rust-rag-tui` | Interactive terminal UI built on ratatui + crossterm with scrollable results and answer pane |
@@ -58,9 +60,12 @@ Edit `.rustrag.toml` for your embedding model path, LLM endpoint, and other sett
 
 ```bash
 ./target/release/rust-rag index /path/to/cargo/workspace
+
+# Force full re-index (ignores incremental detection)
+./target/release/rust-rag index --force /path/to/cargo/workspace
 ```
 
-This runs the full pipeline: AST extraction → embedding → vector store creation with caching.
+This runs the full pipeline: AST extraction → embedding → vector store creation with caching. Subsequent runs only process changed/new/deleted files.
 
 ### Ask a question
 
@@ -92,6 +97,7 @@ RUSRAG_WORKSPACE=/workspace/path ./target/release/rust-rag-serve mcp
 | `clean [-p path]` | Remove `.rustrag/` directory entirely | `rust-rag clean -p /workspace` |
 | `ask <query> [-p path] [--stream]` | Ask a question; returns LLM answer with cited source locations. Use --stream for incremental streaming output | `rust-rag ask "Where is config loaded?" --stream` |
 | `chat [-p path]` | Interactive TUI chat session with scrollable results and LLM answers (supports live streaming) | `rust-rag chat -p /workspace/path` |
+| `symbol <name> [-p path]` | Search for a symbol by name in the indexed workspace, showing kind, file path and line number | `rust-rag symbol "search_symbol" -p /workspace` |
 
 ## Server API
 
@@ -199,18 +205,20 @@ top_k = 5
 
 ```bash
 cargo test --package rust-rag-core
-# Runs 25 tests covering: indexing, vector store roundtrip, cosine similarity,
-# hybrid search alpha blending, BM25 scoring, filters (symbol kind + file extension), edge cases
+# Runs 35 tests covering: indexing, incremental state management, vector store roundtrip,
+# cosine similarity, hybrid search alpha blending, BM25 scoring, filters (symbol kind + file extension),
+# document removal, edge cases
 ```
 
 ## How It Works
 
-1. **Indexing** — `walkdir` walks workspace members; tree-sitter-rust parses each `.rs` file into an AST; semantic nodes are extracted as chunks with metadata (file path, line range, module name, symbol kind)
-2. **Chunk overlap** — after extraction, adjacent chunks within the same file get context lines from neighbors to preserve cross-boundary semantics
-3. **Embedding** — each chunk text is embedded via fastembed's ONNX runtime; results are cached in JSONL for incremental updates
-4. **Vector store** — embeddings + metadata stored as JSONL with an in-memory BM25 inverted index built lazily at query time
-5. **Retrieval** — hybrid search combines cosine similarity (vector) and BM25 text scoring via alpha-weighted blend; filters by symbol kind or file extension applied post-ranking
-6. **LLM answer** — retrieved context is assembled with citations and sent to the configured LLM endpoint; supports both full-response and SSE streaming modes
+1. **Indexing** — `walkdir` walks workspace members; tree-sitter-rust parses each `.rs` file into an AST; semantic nodes are extracted as chunks with metadata (file path, line range, module name, symbol kind). SHA-256 hashes of all files tracked in `.rustrag/index_state.json`.
+2. **Incremental indexing** — on subsequent runs, file hashes are compared against stored state; only new/changed/deleted files trigger re-parsing and embedding. Removed files' documents are deleted from the index atomically.
+3. **Chunk overlap** — after extraction, adjacent chunks within the same file get context lines from neighbors to preserve cross-boundary semantics
+4. **Embedding** — each chunk text is embedded via fastembed's ONNX runtime; results are cached in JSONL for incremental updates
+5. **Vector store** — embeddings + metadata stored as JSONL with an in-memory BM25 inverted index built lazily at query time
+6. **Retrieval** — hybrid search combines cosine similarity (vector) and BM25 text scoring via alpha-weighted blend; filters by symbol kind or file extension applied post-ranking
+7. **LLM answer** — retrieved context is assembled with citations and sent to the configured LLM endpoint; supports both full-response and SSE streaming modes
 
 ## License
 
