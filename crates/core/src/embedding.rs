@@ -170,3 +170,52 @@ pub fn model_cache_dir() -> Result<PathBuf> {
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
 }
+
+/// Download the bge-small-en-v1.5 model files from HuggingFace and save them to a target directory.
+pub fn download_model(target: &Path) -> Result<()> {
+    let repo = "BAAI/bge-small-en-v1.5";
+    let revision = "main";
+
+    // Files in the root of the repository + inside onnx/ subdirectory.
+    // Our embedder expects these exact filenames in one directory.
+    let files: Vec<(&str, &str)> = vec![
+        ("config.json", "config.json"),
+        ("special_tokens_map.json", "special_tokens_map.json"),
+        ("tokenizer.json", "tokenizer.json"),
+        ("tokenizer_config.json", "tokenizer_config.json"),
+        ("onnx/model.onnx", "model.onnx"), // flatten onnx/ -> root
+    ];
+
+    let client = reqwest::blocking::Client::builder()
+        .user_agent("RustRag/0.7.9")
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .build()?;
+
+    std::fs::create_dir_all(target)?;
+
+    for (remote_path, local_name) in &files {
+        println!("Downloading {}...", remote_path);
+        let url = format!(
+            "https://huggingface.co/{}/resolve/{}/{}",
+            repo, revision, remote_path
+        );
+
+        let response = client.get(&url).send()?;
+        if !response.status().is_success() {
+            anyhow::bail!("Failed to download {}: HTTP {}", remote_path, response.status());
+        }
+
+        let bytes = response.bytes()?;
+        println!(
+            "  -> {} ({} bytes)",
+            local_name,
+            bytes.len()
+                .try_into()
+                .unwrap_or(std::u64::MAX)
+        );
+        std::fs::write(target.join(local_name), &bytes)?;
+    }
+
+    println!("Model files saved to: {}", target.display());
+    Ok(())
+}

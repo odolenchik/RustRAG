@@ -16,7 +16,7 @@ tree-sitter-rust = "0.24"
 lsp-server = "0.7"
 petgraph = "0.6"
 ra_ap_syntax = "=0.0.178"
-hf-hub = "0.3"
+reqwest = { version = "0.12", features = ["blocking", "stream", "rustls-tls"] }
 fastembed = { version = "=4.0.0", default-features = false, features = ["ort-download-binaries"] }
 uuid = { version = "1", features = ["v4"] }
 chrono = "0.4"

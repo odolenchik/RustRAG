@@ -726,3 +726,10 @@ pub fn search_symbol_json(query: &str, workspace_root: Option<&str>) -> Result<(
     println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
 }
+
+/// Download the bge-small-en-v1.5 embedding model to a target directory.
+pub fn download_model(target: &str) -> Result<()> {
+    let path = std::path::PathBuf::from(target);
+    rust_rag_core::embedding::download_model(&path)?;
+    Ok(())
+}

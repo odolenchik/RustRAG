@@ -22,6 +22,9 @@ enum Command {
     Ask(AskArgs),
     /// Start interactive chat session (WIP)
     Chat(ChatArgs),
+    /// Download the embedding model (bge-small-en-v1.5) from HuggingFace
+    Download(DownloadArgs),
+
     /// Search for a symbol by name in the indexed workspace
     Symbol(SymbolArgs),
 }
@@ -99,6 +102,12 @@ struct SymbolArgs {
     json: bool,
 }
 
+#[derive(clap::Args)]
+struct DownloadArgs {
+    /// Directory to save the model files (defaults to ~/.cache/huggingface/hub/)
+    path: Option<String>,
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
@@ -136,6 +145,20 @@ fn main() -> Result<()> {
             }
         }
        Command::Chat(args) => return rust_rag_tui::run(args.path.as_deref()),
+        Command::Download(args) => {
+            let target = if let Some(path) = args.path {
+                path
+            } else {
+                // Default to ~/.cache/huggingface/hub/ (standard HF cache location)
+                dirs::cache_dir()
+                    .unwrap_or_else(|| std::path::PathBuf::from("."))
+                    .join("huggingface")
+                    .join("hub")
+                    .to_string_lossy()
+                    .to_string()
+            };
+            rust_rag_cli::download_model(&target)
+        }
         Command::Symbol(args) => {
             if args.json {
                 rust_rag_cli::search_symbol_json(&args.query, args.path.as_deref())
