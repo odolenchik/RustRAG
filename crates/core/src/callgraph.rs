@@ -75,6 +75,7 @@ fn parse_call_exprs(text: &str) -> Vec<String> {
     let root = parsed.tree();
 
     // Walk the AST tree to find all call expressions
+    let mut callees: Vec<String> = Vec::new();
     for node in root.syntax().descendants() {
         if let Some(call_expr) = ra_ap_syntax::ast::CallExpr::cast(node.clone()) {
             // CallExpr.expr() returns Option<Expr> — the expression being called
@@ -82,14 +83,14 @@ fn parse_call_exprs(text: &str) -> Vec<String> {
                 // Expr implements Display — convert to string for callee name
                 let name = expr.to_string();
                 // Skip trivial calls like `true`, `false`, `self`, `Self`
-                if !is_trivial_call(&name) {
-                    return vec![name];
+                if !is_trivial_call(&name) && !callees.contains(&name) {
+                    callees.push(name);
                 }
             }
         }
     }
 
-    Vec::new()
+    callees
 }
 
 /// Check if a call expression name is trivial (not a real function call).

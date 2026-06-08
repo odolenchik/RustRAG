@@ -1,6 +1,7 @@
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
+use std::sync::RwLock;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -12,17 +13,34 @@ pub struct Document {
     pub embedding: Vec<f32>,
 }
 
+/// Cache entry for lazy-loaded documents with mtime-based invalidation.
+struct DocCacheEntry {
+    mtime: u64,
+    documents: Vec<serde_json::Value>,
+}
+
+impl std::fmt::Debug for DocCacheEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DocCacheEntry").field("documents", &"[..]").finish()
+    }
+}
+
 /// Persistent JSONL-based vector store for RustRAG indexing.
 pub struct VectorStore {
     pub path: PathBuf,
+    /// Cache for lazy-loaded documents to avoid re-reading index.jsonl on every search.
+    cache: RwLock<Option<DocCacheEntry>>,
 }
 
 impl VectorStore {
-    /// Open or create a vector store at the given directory.
+   /// Open or create a vector store at the given directory.
     pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self> {
         let path = path.as_ref();
         std::fs::create_dir_all(path)?;
-        Ok(VectorStore { path: path.to_path_buf() })
+        Ok(VectorStore {
+            path: path.to_path_buf(),
+            cache: RwLock::new(None),
+        })
     }
 
     /// Get the default .rustrag path inside a workspace.
@@ -97,22 +115,57 @@ impl VectorStore {
         Ok(())
     }
 
-    /// List all document IDs currently stored in the index.
+   /// List all document IDs currently stored in the index.
     pub fn list_document_ids(&self) -> Result<Vec<String>> {
+        let docs = self.load_documents()?;
+        Ok(docs.iter()
+            .filter_map(|v| v["id"].as_str().map(String::from))
+            .collect())
+    }
+
+    /// Lazy-load documents from index.jsonl, using mtime-based cache.
+    fn load_documents(&self) -> Result<Vec<serde_json::Value>> {
         let index_path = self.path.join("index.jsonl");
-        if !index_path.exists() {
-            return Ok(Vec::new());
-        }
-        let content = std::fs::read_to_string(&index_path)?;
-        let mut ids = Vec::new();
-        for line in content.lines().filter(|l| !l.trim().is_empty()) {
-            if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
-                if let Some(doc_id) = value["id"].as_str() {
-                    ids.push(doc_id.to_string());
+        if !index_path.exists() { return Ok(Vec::new()); }
+
+        // Get current file mtime for cache invalidation
+        let current_mtime = std::fs::metadata(&index_path)
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|d| d.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u64);
+
+        {
+            let cache = self.cache.read().unwrap();
+            if let Some(entry) = &*cache {
+                // Check mtime — if file hasn't changed, return cached docs
+                if current_mtime == Some(entry.mtime) {
+                    return Ok(entry.documents.clone());
                 }
             }
         }
-        Ok(ids)
+
+        // Cache miss or stale — read and parse the file
+        let content = std::fs::read_to_string(&index_path)?;
+        let documents: Vec<serde_json::Value> = content
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| serde_json::from_str(line))
+            .collect::<Result<Vec<_>, _>>()?;
+
+       // Update cache and return a clone for the caller
+        if let Some(mtime) = current_mtime {
+            let mut cache = self.cache.write().unwrap();
+            *cache = Some(DocCacheEntry { mtime, documents: documents.clone() });
+        }
+
+        Ok(documents)
+    }
+
+    /// Invalidate the document cache (called after index updates).
+    pub fn invalidate_cache(&self) {
+        let mut cache = self.cache.write().unwrap();
+        *cache = None;
     }
 
     /// Search by embedding vector. Returns top-k results with relevance scores.
@@ -143,17 +196,7 @@ impl VectorStore {
         filters: Option<&SearchFilters>,
         pure_vector: bool,
     ) -> Result<Vec<SearchResult>> {
-        let index_path = self.path.join("index.jsonl");
-        if !index_path.exists() {
-            return Ok(Vec::new());
-        }
-
-        let content = std::fs::read_to_string(&index_path)?;
-        let documents: Vec<serde_json::Value> = content
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .map(|line| serde_json::from_str(line))
-            .collect::<Result<Vec<_>, _>>()?;
+      let documents = self.load_documents()?;
 
         if documents.is_empty() {
             return Ok(Vec::new());
@@ -169,15 +212,16 @@ impl VectorStore {
         let total_docs = documents.len();
         let avgdl: f64 = doc_stats.values().map(|s| s.doc_len as f64).sum::<f64>() / total_docs.max(1) as f64;
 
-        // Score each document with both vector similarity and BM25
-        type DocScore = (f64, usize); // (combined_score, original_index)
+        // Score each document with both vector similarity and BM25.
+        // Stores (combined_score, vec_similarity_f32, original_index) so we don't recompute cosine sim.
+        type DocScore = (f64, f32, usize); // (combined_score, vector_sim_for_result, original_index)
         let mut scored: Vec<DocScore> = Vec::new();
 
         for (idx, doc) in documents.iter().enumerate() {
             let doc_id = doc["id"].as_str().unwrap_or("").to_string();
 
-            // --- Vector similarity score ---
-            let vec_score_val: f64 = if let Some(embedding) = doc.get("embedding") {
+            // --- Vector similarity score (computed once per document) ---
+            let vec_score_val: f32 = if let Some(embedding) = doc.get("embedding") {
                 if let Some(embed_arr) = embedding.as_array() {
                     let embed_f32: Vec<f32> = embed_arr.iter().filter_map(|v| v.as_f64()).map(|f| f as f32).collect();
                     cosine_similarity(query_vec, &embed_f32)
@@ -204,16 +248,16 @@ impl VectorStore {
             let bm25_normalized = if avgdl > 0.0 { (bm25_val / avgdl).max(0.0) } else { 0.0 };
 
             // --- Combine scores ---
-            let combined = alpha * vec_score_val + (1.0 - alpha) * bm25_normalized;
-            scored.push((combined, idx));
+            let combined = alpha * vec_score_val as f64 + (1.0 - alpha) * bm25_normalized;
+            scored.push((combined, vec_score_val, idx));
         }
 
         // Sort by combined score descending
         scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
-        // Apply filters and build SearchResult objects
+        // Apply filters and build SearchResult objects (reuse precomputed similarity)
         let mut results: Vec<SearchResult> = Vec::new();
-        for (_, idx) in scored {
+        for (_, vec_sim, idx) in scored {
             if results.len() >= top_k { break; }
 
             let doc = &documents[idx];
@@ -225,14 +269,6 @@ impl VectorStore {
                 }
             }
 
-            // Compute cosine similarity for the score field
-            let sim: f32 = if let Some(embedding) = doc.get("embedding") {
-                if let Some(embed_arr) = embedding.as_array() {
-                    let embed_f32: Vec<f32> = embed_arr.iter().filter_map(|v| v.as_f64()).map(|f| f as f32).collect();
-                    cosine_similarity(query_vec, &embed_f32) as f32
-                } else { 0.0 }
-            } else { 0.0 };
-
             results.push(SearchResult {
                 id: doc["id"].as_str().unwrap_or("").to_string(),
                 file_path: PathBuf::from(doc["file_path"].as_str().unwrap_or("")),
@@ -242,7 +278,7 @@ impl VectorStore {
                 symbol_kind: serde_json::from_value(doc["symbol_kind"].clone()).ok()
                     .map(|v: SymbolKindWrapper| v.0),
                 text: doc["text"].as_str().unwrap_or("").to_string(),
-                score: sim,
+                score: vec_sim,
             });
         }
 
@@ -419,14 +455,14 @@ impl SymbolKind {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SymbolKindWrapper(pub SymbolKind);
 
-/// Compute cosine similarity between two vectors (f32 inputs -> f64 output).
-fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
+/// Compute cosine similarity between two vectors. Returns a value in [-1, 1].
+pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() {
         return 0.0;
     }
-    let dot: f64 = a.iter().zip(b.iter()).map(|(x, y)| *x as f64 * *y as f64).sum();
-    let mag_a: f64 = a.iter().map(|x| (*x) as f64 * (*x) as f64).sum::<f64>().sqrt();
-    let mag_b: f64 = b.iter().map(|x| (*x) as f64 * (*x) as f64).sum::<f64>().sqrt();
+    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+    let mag_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let mag_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
 
     if mag_a == 0.0 || mag_b == 0.0 {
         return 0.0;

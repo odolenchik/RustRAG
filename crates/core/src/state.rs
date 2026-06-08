@@ -123,6 +123,7 @@ impl IndexState {
 
     /// Check if any files have changed since last index.
     pub fn has_changes(&self, current_files: &HashMap<PathBuf, String>) -> bool {
-        !self.compare(current_files).0.is_empty() || !self.compare(current_files).1.is_empty()
+        let (new_files, changed_files, _) = self.compare(current_files);
+        !new_files.is_empty() || !changed_files.is_empty()
     }
 }

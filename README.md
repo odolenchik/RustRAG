@@ -1,4 +1,4 @@
-# RustRAG v0.7.8
+# RustRAG v0.7.9
 
 **Local RAG for Rust codebases — full offline embeddings, hybrid BM25+vector search, MCP server.**
 
@@ -9,13 +9,14 @@ A self-hosted Retrieval-Augmented Generation tool built specifically for analyzi
 - **AST-aware indexing** — tree-sitter-rust parses source files into semantic chunks (functions, impl blocks, unsafe regions, traits, modules, structs, enums, macros) instead of naive fixed-size text splits
 - **Hybrid search (BM25 + vector)** — full inverted index with standard BM25 scoring combined with cosine similarity via configurable alpha blending (~0.7 recommended)
 - **Fully local embeddings** — fastembed ONNX runtime runs `bge-small-en-v1.5` locally; no external API calls needed for embedding computation
-- **Embedding cache** — JSONL-based persistent cache prevents redundant ONNX inference across re-indexes and workspace reloads
+- **Embedding cache with model versioning** — JSONL-based persistent cache includes a model_id marker; automatically invalidated when the embedding model changes (different weights or dimensions), preventing stale results
+- **Automatic model download** — if no local model is found, `rust-rag` auto-downloads `bge-small-en-v1.5` (~127 MB) from HuggingFace to `~/.cache/huggingface/hub/`; supports both flat and standard HF cache layouts
 - **Configurable chunk overlap** — adjacent AST-extracted chunks within a file get overlapping context lines to preserve cross-boundary semantics (function calls, macro invocations spanning chunk edges)
 - **Call graph analysis** — AST-based call edge extraction using `ra_ap_syntax` (rust-analyzer's syntax crate); parses each chunk to find CallExpr nodes and extract callee names
 - **MCP server** — Model Context Protocol stdio server exposing `rag_search` and `rag_query` tools for AI coding agents (Claude Desktop, Cursor, Windsurf, etc.)
 - **Interactive TUI** — ratatui-based terminal interface with scrollable results, real-time streaming LLM answers, and keyboard navigation
 - **HTTP API + CORS** — axum server with `/search`, `/query`, `/query/stream`, and `/status` endpoints; SSE streaming support; cross-origin support for browser clients
-- **Incremental indexing** — SHA-256-based file change detection; only re-indexes changed/new/deleted files on subsequent runs. Stored in `.rustrag/index_state.json` for persistence across invocations.
+- **Incremental indexing** — SHA-256-based file change detection with O(1) comparison (no redundant full-file scans); only re-indexes changed/new/deleted files. Stored in `.rustrag/index_state.json` for persistence across invocations.
 - **Symbol search** — `rust-rag symbol <name>` finds symbols by name across the index, showing kind (Function/ImplBlock/etc.), file path and line number.
 - **Configurable via TOML** — `.rustrag.toml` at workspace root controls embedding model path, LLM endpoint/model, top_k, chunk overlap
 
@@ -162,6 +163,20 @@ Implements **MCP stdio transport** (protocol version `2024-11-05`) with two tool
 | `rag_search` | Returns raw search results with BM25+vector scores and metadata |
 | `rag_query` | Full RAG pipeline — retrieves relevant chunks, builds context, returns LLM answer with citations |
 
+## Model Auto-Download
+
+When no local model is found, `rust-rag download` (or the first search/query command) automatically downloads `bge-small-en-v1.5` from HuggingFace:
+
+```bash
+# Manual download to a specific directory
+./target/release/rust-rag download ~/.cache/huggingface/hub/
+
+# Or just run any command — it will prompt and auto-download
+./target/release/rust-rag index /path/to/workspace
+```
+
+The model is saved in the standard HuggingFace cache layout. You can also set `RUSRAG_MODEL_PATH` to point to a custom directory containing `model.onnx`, `tokenizer.json`, etc.
+
 ## Configuration
 
 All settings in `.rustrag.toml` at workspace root:
@@ -216,13 +231,13 @@ cargo test --package rust-rag-core
 
 ## How It Works
 
-1. **Indexing** — `walkdir` walks workspace members; tree-sitter-rust parses each `.rs` file into an AST; semantic nodes are extracted as chunks with metadata (file path, line range, module name, symbol kind). SHA-256 hashes of all files tracked in `.rustrag/index_state.json`.
-2. **Incremental indexing** — on subsequent runs, file hashes are compared against stored state; only new/changed/deleted files trigger re-parsing and embedding. Removed files' documents are deleted from the index atomically.
-3. **Chunk overlap** — after extraction, adjacent chunks within the same file get context lines from neighbors to preserve cross-boundary semantics
-4. **Embedding** — each chunk text is embedded via fastembed's ONNX runtime; results are cached in JSONL for incremental updates
-5. **Vector store** — embeddings + metadata stored as JSONL with an in-memory BM25 inverted index built lazily at query time
-6. **Retrieval** — hybrid search combines cosine similarity (vector) and BM25 text scoring via alpha-weighted blend; filters by symbol kind or file extension applied post-ranking
-7. **LLM answer** — retrieved context is assembled with citations and sent to the configured LLM endpoint; supports both full-response and SSE streaming modes
+1. **Indexing** — `walkdir` walks workspace members; tree-sitter-rust parses each `.rs` file into an AST; semantic nodes are extracted as chunks with metadata (file path, line range, module name, symbol kind). SHA-256 hashes tracked in `.rustrag/index_state.json`.
+2. **Incremental indexing** — on subsequent runs, file hashes are compared against stored state via O(1) lookup; only new/changed/deleted files trigger re-parsing and embedding. Removed files' documents are deleted from the index atomically.
+3. **Chunk overlap** — after extraction, adjacent chunks within the same file get context lines from neighbors using an efficient byte-offset-to-line mapping (O(log N) binary search); each file is read only once regardless of chunk count.
+4. **Embedding** — each chunk text is embedded via fastembed's ONNX runtime; results are cached in JSONL with model_id versioning for automatic invalidation on model change. Batch embedding processes all chunks in a single ONNX inference call instead of N individual calls.
+5. **Vector store** — embeddings + metadata stored as JSONL with an in-memory BM25 inverted index built lazily at query time; documents are cached with mtime-based invalidation to avoid re-parsing on every search.
+6. **Retrieval** — hybrid search combines cosine similarity (vector) and BM25 text scoring via alpha-weighted blend; each document's vector similarity is computed once and reused for both ranking and result display. Filters by symbol kind or file extension applied post-ranking.
+7. **LLM answer** — retrieved context is assembled with citations and sent to the configured LLM endpoint; supports both full-response and SSE streaming modes.
 
 ## License
 

@@ -141,11 +141,6 @@ pub fn index_workspace(path: &str) -> Result<()> {
         store.insert_documents(&new_documents)?;
     }
 
-    // Insert new documents.
-    if !new_documents.is_empty() {
-        store.insert_documents(&new_documents)?;
-    }
-
     // Step 7: Update index state.
     let mut updated_state = saved_state;
     updated_state.update_files(current_files);

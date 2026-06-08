@@ -14,15 +14,26 @@ pub fn retrieve(query: &str, embedding: &[f32], vector_store: &crate::vector_sto
 
 /// Retrieve relevant chunks from in-memory chunks (no persistent store).
 pub fn retrieve_from_chunks(chunks: &[Chunk], query: &str, top_k: usize) -> Result<Vec<SearchResult>> {
-    let embedding = crate::embedding::embed(query)?;
+    let query_embedding = crate::embedding::embed(query)?;
 
-    let mut scored: Vec<(f32, Chunk)> = Vec::new();
-    for chunk in chunks {
-        if chunk.text.is_empty() || chunk.text.trim().len() < 4 {
-            continue;
+    // Collect texts that pass the size filter, preserving original order for batch embedding
+    let mut valid_indices: Vec<usize> = Vec::new();
+    let mut valid_texts: Vec<String> = Vec::new();
+    for (i, chunk) in chunks.iter().enumerate() {
+        if !chunk.text.is_empty() && chunk.text.trim().len() >= 4 {
+            valid_indices.push(i);
+            valid_texts.push(chunk.text.clone());
         }
-        let chunk_embedding = crate::embedding::embed(&chunk.text)?;
-        scored.push((cosine_similarity_score(&embedding, &chunk_embedding), chunk.clone()));
+    }
+
+    // Batch-embed all valid chunks in a single ONNX inference call
+    let batch_embeddings = crate::embedding::embed_batch(&valid_texts.iter().map(|t| t.as_str()).collect::<Vec<_>>())?;
+
+    // Map results back to (score, chunk) pairs
+    let mut scored: Vec<(f32, usize)> = Vec::new();
+    for (batch_i, chunk_idx) in valid_indices.into_iter().enumerate() {
+        let score = cosine_similarity_score(&query_embedding, &batch_embeddings[batch_i]);
+        scored.push((score, chunk_idx));
     }
 
     scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
@@ -30,24 +41,27 @@ pub fn retrieve_from_chunks(chunks: &[Chunk], query: &str, top_k: usize) -> Resu
     let results: Vec<SearchResult> = scored
         .into_iter()
         .take(top_k)
-        .map(|(score, chunk)| SearchResult {
-            id: format!("chunk_{}", chunk.file_path.to_string_lossy()),
-            file_path: chunk.file_path.clone(),
-            line_start: chunk.line_start,
-            line_end: chunk.line_end,
-            module_name: chunk.module_name.clone(),
-            symbol_kind: match &chunk.symbol_kind {
-                crate::indexer::SymbolKind::Function => Some(crate::vector_store::SymbolKind::Function),
-                crate::indexer::SymbolKind::ImplBlock => Some(crate::vector_store::SymbolKind::ImplBlock),
-                crate::indexer::SymbolKind::UnsafeRegion => Some(crate::vector_store::SymbolKind::UnsafeRegion),
-                crate::indexer::SymbolKind::TraitImpl => Some(crate::vector_store::SymbolKind::TraitImpl),
-                crate::indexer::SymbolKind::Module => Some(crate::vector_store::SymbolKind::Module),
-                crate::indexer::SymbolKind::Struct => Some(crate::vector_store::SymbolKind::Struct),
-                crate::indexer::SymbolKind::Enum => Some(crate::vector_store::SymbolKind::Enum),
-                crate::indexer::SymbolKind::Macro => Some(crate::vector_store::SymbolKind::Macro),
-            },
-            text: chunk.text.clone(),
-            score,
+        .map(|(score, chunk_idx)| {
+            let chunk = &chunks[chunk_idx];
+            SearchResult {
+                id: format!("chunk_{}", chunk.file_path.to_string_lossy()),
+                file_path: chunk.file_path.clone(),
+                line_start: chunk.line_start,
+                line_end: chunk.line_end,
+                module_name: chunk.module_name.clone(),
+                symbol_kind: match &chunk.symbol_kind {
+                    crate::indexer::SymbolKind::Function => Some(crate::vector_store::SymbolKind::Function),
+                    crate::indexer::SymbolKind::ImplBlock => Some(crate::vector_store::SymbolKind::ImplBlock),
+                    crate::indexer::SymbolKind::UnsafeRegion => Some(crate::vector_store::SymbolKind::UnsafeRegion),
+                    crate::indexer::SymbolKind::TraitImpl => Some(crate::vector_store::SymbolKind::TraitImpl),
+                    crate::indexer::SymbolKind::Module => Some(crate::vector_store::SymbolKind::Module),
+                    crate::indexer::SymbolKind::Struct => Some(crate::vector_store::SymbolKind::Struct),
+                    crate::indexer::SymbolKind::Enum => Some(crate::vector_store::SymbolKind::Enum),
+                    crate::indexer::SymbolKind::Macro => Some(crate::vector_store::SymbolKind::Macro),
+                },
+                text: chunk.text.clone(),
+                score,
+            }
         })
         .collect();
 
@@ -66,16 +80,4 @@ pub fn retrieve_hybrid(
     retrieve_from_chunks(chunks, query, top_k)
 }
 
-fn cosine_similarity_score(a: &[f32], b: &[f32]) -> f32 {
-    if a.len() != b.len() || a.is_empty() {
-        return 0.0;
-    }
-    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-    let mag_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-    let mag_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-
-    if mag_a == 0.0 || mag_b == 0.0 {
-        return 0.0;
-    }
-    dot / (mag_a * mag_b)
-}
+use crate::vector_store::cosine_similarity as cosine_similarity_score;

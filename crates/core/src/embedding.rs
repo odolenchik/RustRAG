@@ -1,12 +1,54 @@
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 use fastembed::{TextEmbedding, UserDefinedEmbeddingModel, InitOptionsUserDefined, TokenizerFiles, Pooling, read_file_to_bytes};
 
+/// Standard HuggingFace cache directory for downloaded models.
+fn hf_cache_model_dir() -> Option<PathBuf> {
+    // HF stores downloaded models under ~/.cache/huggingface/hub/
+    let home = std::env::var("HOME").ok()?;
+    let hub = PathBuf::from(&home).join(".cache/huggingface/hub");
+
+    if !hub.exists() { return None; }
+
+    // Look for model.onnx in the hub root (flat layout from manual copy)
+    if hub.join("model.onnx").exists() {
+        return Some(hub);
+    }
+
+    // Check subdirectories: models--Xenova--bge-small-en-v1.5/snapshots/*/onnx/
+    for entry in std::fs::read_dir(&hub).ok()?.flatten() {
+        let path = entry.path();
+        if !path.is_dir() { continue; }
+
+        // Check snapshots/*/onnx/model.onnx (standard HF layout)
+        if let Ok(snapshots) = std::fs::read_dir(&path) {
+            for snapshot in snapshots.flatten() {
+                let snap_path = snapshot.path();
+                if !snap_path.is_dir() { continue; }
+
+                // Canonicalize to resolve symlinks and .. components
+                if let Ok(resolved) = snap_path.canonicalize() {
+                    if resolved.join("onnx").join("model.onnx").exists() {
+                        return Some(resolved.join("onnx"));
+                    }
+                }
+            }
+        }
+
+        // Also check direct model.onnx in repo directory (alternative layout)
+        if path.join("model.onnx").exists() {
+            return Some(path);
+        }
+    }
+
+    None
+}
+
 /// Resolve the directory containing model files.
-/// Prefers `RUSRAG_MODEL_PATH` env var, then config file, falls back to searching for Download/ by walking up from CARGO_MANIFEST_DIR.
+/// Priority: env var > config file > HF cache > project-local Download/ > error.
 fn model_dir() -> PathBuf {
     // 1) Explicit env var (highest priority)
     if let Ok(path) = std::env::var("RUSRAG_MODEL_PATH") {
@@ -20,27 +62,25 @@ fn model_dir() -> PathBuf {
         }
     }
 
-    // 3) Walk up from CARGO_MANIFEST_DIR looking for a directory containing model.onnx
+    // 3) Standard HuggingFace cache (~/.cache/huggingface/hub/) — works for any user, any machine
+    if let Some(hf_dir) = hf_cache_model_dir() {
+        return hf_dir;
+    }
+
+    // 4) Project-local Download/ (for development / bundled builds)
     let start = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     for ancestor in start.ancestors() {
         if ancestor.join("Download").join("model.onnx").exists() {
             return ancestor.join("Download");
         }
-        // Also check common alternative locations
-        if ancestor.join("model.onnx").exists() {
-            return ancestor.to_path_buf();
-        }
     }
 
-    // 4) Final fallback: one level up from CARGO_MANIFEST_DIR (covers single-crate layout)
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("CARGO_MANIFEST_DIR should have a parent")
-        .join("Download")
+    // 5) Absolute fallback — will fail gracefully on init with a clear error message
+    PathBuf::from("/usr/local/share/rustrag/models")
 }
 
 /// Initialize the embedding model from local ONNX + tokenizer files.
-fn init_embedder(model_dir: &Path) -> Result<TextEmbedding> {
+fn try_init_embedder(model_dir: &Path) -> Result<TextEmbedding> {
     let onnx_bytes = std::fs::read(model_dir.join("model.onnx"))
         .context("Failed to read model.onnx")?;
 
@@ -58,9 +98,40 @@ fn init_embedder(model_dir: &Path) -> Result<TextEmbedding> {
         .context("Failed to initialize user-defined embedding model")
 }
 
+/// Initialize the embedding model. If not found in any location, attempts auto-download from HuggingFace.
+fn init_embedder() -> Result<TextEmbedding> {
+    let dir = model_dir();
+
+    if let Ok(em) = try_init_embedder(&dir) {
+        return Ok(em);
+    }
+
+    // Model not found — attempt auto-download to HF cache
+    let home = std::env::var("HOME").ok();
+    let hf_target = match home.as_ref() {
+        Some(h) => PathBuf::from(h).join(".cache/huggingface/hub"),
+        None => anyhow::bail!(
+            "Cannot determine HOME to download model.\n\
+             Please download manually:\n\n  rust-rag download ~/.cache/huggingface/hub/\n\
+             \nOr set RUSRAG_MODEL_PATH."
+        ),
+    };
+
+    println!("Model not found, downloading from HuggingFace...");
+    if let Err(e) = download_model(&hf_target) {
+        anyhow::bail!(
+            "Failed to auto-download model: {e}\n\n\
+             Please try manually:\n  rust-rag download ~/.cache/huggingface/hub/"
+        );
+    }
+
+    println!("Model downloaded. Trying again...");
+    try_init_embedder(&hf_target).context("Failed to load embedding model after download")
+}
+
 /// Lazy-initialized singleton embedder — loads ONNX model once on first use.
 static EMBEDDER: LazyLock<TextEmbedding> = LazyLock::new(|| {
-    init_embedder(&model_dir()).expect("Embedding model initialization failed")
+    init_embedder().expect("Embedding model initialization failed")
 });
 
 /// Embed a single text chunk into a vector using the local embedding model.
@@ -97,6 +168,15 @@ pub struct EmbedCache {
 }
 
 impl EmbedCache {
+    /// Current model identifier used to invalidate stale caches.
+    /// Changes when the underlying ONNX model changes (different weights, dimensions).
+    fn model_id() -> String {
+        // Use a simple hash of the embedding dimension as a proxy for "model identity".
+        // Different models produce different vector sizes, so this catches most changes.
+        // For a more robust solution, store a model version string in config.
+        format!("bge-small-en-v1.5")
+    }
+
     /// Open the embed cache for a workspace's `.rustrag` directory.
     pub fn open(rustrag_dir: &Path) -> Self {
         Self { path: rustrag_dir.join("embed_cache.jsonl") }
@@ -109,6 +189,42 @@ impl EmbedCache {
         Ok(texts.iter()
             .map(|t| cache.get(&hash_text(t)).cloned())
             .collect())
+    }
+
+  fn read_cache(&self) -> Result<std::collections::HashMap<String, Vec<f32>>> {
+        let mut cache = std::collections::HashMap::new();
+        if !self.path.exists() { return Ok(cache); }
+
+        let current_model_id = Self::model_id();
+        let content = std::fs::read_to_string(&self.path)?;
+
+        // First line may be a model_id marker (starts with "#model_id=")
+        let mut lines = content.lines().peekable();
+        if let Some(first_line) = lines.peek() {
+            if first_line.starts_with("#model_id=") {
+                let stored_model_id = first_line.trim_start_matches("#model_id=").to_string();
+                if stored_model_id != current_model_id {
+                    // Model changed — cache is stale, return empty to force regeneration
+                    eprintln!("[rustrag] Embedding cache invalidated: model_id mismatch ({} != {})", stored_model_id, current_model_id);
+                    return Ok(cache);
+                }
+                lines.next(); // skip the marker line
+            }
+        }
+
+        for line in lines.filter(|l| !l.trim().is_empty()) {
+            if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {
+                if let (Some(hash), Some(embed)) = (entry["hash"].as_str(), entry.get("embedding")) {
+                    let vec: Vec<f32> = embed.as_array().unwrap_or(&Vec::new())
+                        .iter()
+                        .filter_map(|v| v.as_f64())
+                        .map(|f| f as f32)
+                        .collect();
+                    cache.insert(hash.to_string(), vec);
+                }
+            }
+        }
+        Ok(cache)
     }
 
     /// Write new embeddings for previously uncached entries. Returns the count of cached hits.
@@ -126,31 +242,16 @@ impl EmbedCache {
 
         let file = std::fs::OpenOptions::new().write(true).create(true).open(&self.path)?;
         let mut writer = std::io::BufWriter::new(file);
+
+        // Write model_id marker as first line
+        writeln!(writer, "#model_id={}", Self::model_id())?;
+
         for (k, v) in &cache {
             let line = serde_json::json!({ "hash": k, "embedding": v });
             writeln!(writer, "{}", serde_json::to_string(&line).unwrap())?;
         }
         writer.flush()?;
         Ok(())
-    }
-
-    fn read_cache(&self) -> Result<std::collections::HashMap<String, Vec<f32>>> {
-        let mut cache = std::collections::HashMap::new();
-        if !self.path.exists() { return Ok(cache); }
-        let content = std::fs::read_to_string(&self.path)?;
-        for line in content.lines().filter(|l| !l.trim().is_empty()) {
-            if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {
-                if let (Some(hash), Some(embed)) = (entry["hash"].as_str(), entry.get("embedding")) {
-                    let vec: Vec<f32> = embed.as_array().unwrap_or(&Vec::new())
-                        .iter()
-                        .filter_map(|v| v.as_f64())
-                        .map(|f| f as f32)
-                        .collect();
-                    cache.insert(hash.to_string(), vec);
-                }
-            }
-        }
-        Ok(cache)
     }
 
     /// Clear the embed cache file.
