@@ -58,6 +58,10 @@ struct AskArgs {
     /// Path to the workspace whose index should be used (defaults to current directory)
     #[arg(short, long)]
     path: Option<String>,
+
+    /// Stream the LLM response incrementally instead of waiting for full response
+    #[arg(long, default_value = "false")]
+    stream: bool,
 }
 
 #[derive(clap::Args)]
@@ -77,7 +81,11 @@ fn main() -> Result<()> {
         Command::Clean(args) => rust_rag_cli::clean_workspace(args.path.as_deref()),
         Command::Ask(args) => {
             let workspace = args.path.as_deref();
-            rust_rag_cli::ask(&args.query, workspace)
+            if args.stream {
+                tokio::runtime::Runtime::new()?.block_on(rust_rag_cli::ask_stream(&args.query, workspace))
+            } else {
+                rust_rag_cli::ask(&args.query, workspace)
+            }
         }
         Command::Chat(args) => return rust_rag_tui::run(args.path.as_deref()),
     }

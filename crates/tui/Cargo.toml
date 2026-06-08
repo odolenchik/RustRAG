@@ -8,6 +8,7 @@ rust-version.workspace = true
 anyhow.workspace = true
 serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true }
+futures-util = "0.3"
 ratatui = "0.29"
 crossterm = "0.28"
 syntect = "5"

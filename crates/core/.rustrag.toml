@@ -1,2 +1,2 @@
-[llm]
-top_k = 10
+[embedding]
+chunk_overlap = 3

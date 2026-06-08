@@ -1,5 +1,10 @@
 use anyhow::Result;
 
-pub fn run(query: &str) -> Result<()> {
-    crate::ask(query, None)
+pub async fn run(query: &str, stream: bool) -> Result<()> {
+    if stream {
+        crate::ask_stream(query, None).await?;
+    } else {
+        crate::ask(query, None)?;
+    }
+    Ok(())
 }

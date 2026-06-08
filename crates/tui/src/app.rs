@@ -4,6 +4,7 @@ use ratatui::prelude::*;
 // Rectangle = Rect (from prelude)
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 use rust_rag_core::vector_store::{SearchResult, VectorStore};
+use rust_rag_llm::ChatBackend;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::Duration;
@@ -43,7 +44,8 @@ pub enum AppState {
 
 #[derive(Debug)]
 enum TuiEvent {
-    LlmDone(String),
+    LlmChunk(String),
+    LlmDone,
     LlmError(String),
 }
 
@@ -54,6 +56,7 @@ pub struct App {
     selected_result: usize,
     llm_state: LlmState,
     llm_answer: Option<String>,
+    llm_partial_answer: String, // accumulated text during streaming
     error_msg: Option<String>,
     workspace_path: PathBuf,
     app_state: AppState,
@@ -73,6 +76,7 @@ impl App {
             selected_result: 0,
             llm_state: LlmState::Idle,
             llm_answer: None,
+            llm_partial_answer: String::new(),
             error_msg: None,
             workspace_path: workspace_root.to_path_buf(),
             app_state: AppState::Idle,
@@ -138,13 +142,38 @@ impl App {
             .join("\n\n");
         let full_message = format!("Question: {}\n\nRelevant code:\n{}", query, context);
 
-        std::thread::spawn(move || {
+       std::thread::spawn(move || {
             // LLM client reads endpoint/model from .rustrag.toml (via Config::find())
-            match rust_rag_llm::ollama_client::LlmClient::chat(&system_prompt, &full_message) {
-                Ok(response) => { let _ = tx2.send(TuiEvent::LlmDone(response)); }
-                Err(e) => { let _ = tx2.send(TuiEvent::LlmError(format!("{}", e))); }
-            }
+            let rt = match tokio::runtime::Runtime::new() {
+                Ok(rt) => rt,
+                Err(_) => return,
+            };
+
+            let client = rust_rag_llm::ollama_client::LlmClient::default();
+
+            // Stream chunks and send them to the TUI via channel
+            rt.block_on(async {
+                let mut stream = client.complete_stream_chunks(&system_prompt, &full_message);
+                loop {
+                    let chunk_result = futures_util::stream::StreamExt::next(&mut stream).await;
+                    match chunk_result {
+                        Some(Ok(text)) => {
+                            // Send partial text to TUI for live display
+                            if tx2.send(TuiEvent::LlmChunk(text)).is_err() { break; }
+                        }
+                        Some(Err(e)) => {
+                            let _ = tx2.send(TuiEvent::LlmError(format!("{}", e)));
+                            break;
+                        }
+                        None => break, // stream exhausted — done normally
+                    }
+                }
+            });
+
+            // After stream completes, send final Done event with accumulated answer
+            let _ = tx2.send(TuiEvent::LlmDone);
         });
+
     }
 
     fn handle_key(&mut self, key: KeyCode) {
@@ -232,9 +261,17 @@ impl App {
         if let Ok(rx) = self.rx.lock() {
             while let Ok(event) = rx.try_recv() {
                 match event {
-                    TuiEvent::LlmDone(answer) => {
-                        self.llm_state = LlmState::Done;
-                        self.llm_answer = Some(answer);
+                    TuiEvent::LlmChunk(chunk) => {
+                        // Streaming chunk — append partial text and trigger redraw
+                        self.llm_partial_answer.push_str(&chunk);
+                    }
+                    TuiEvent::LlmDone => {
+                        // Stream complete — move accumulated answer into llm_answer
+                        if !self.llm_partial_answer.is_empty() {
+                            self.llm_answer = Some(self.llm_partial_answer.clone());
+                            self.llm_state = LlmState::Done;
+                        }
+                        self.llm_partial_answer.clear();
                     }
                     TuiEvent::LlmError(err) => {
                         self.llm_state = LlmState::Error;
@@ -317,7 +354,13 @@ impl App {
                     height: llm_height.min(remaining),
                 };
 
-                if self.llm_state == LlmState::Loading {
+                if self.llm_state == LlmState::Loading && !self.llm_partial_answer.is_empty() {
+                    // Show streaming partial answer with a blinking cursor indicator
+                    let display_text = format!("\u{258A} {}", self.llm_partial_answer);
+                    let llm_paragraph = Paragraph::new(Span::raw(display_text)).style(Style::default().fg(Color::Green));
+                    frame.render_widget(llm_paragraph, llm_rect);
+
+                } else if self.llm_state == LlmState::Loading {
                     let loading_text = Paragraph::new(Span::raw("  LLM is thinking..."))
                         .style(Style::default().fg(Color::Yellow));
                     frame.render_widget(loading_text, llm_rect);

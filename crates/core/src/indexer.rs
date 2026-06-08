@@ -43,7 +43,8 @@ pub enum SymbolKind {
 /// Apply configured overlap to chunks within each file.
 /// Expands boundaries by including adjacent lines from neighboring chunks,
 /// so context at chunk boundaries is preserved for the LLM.
-fn apply_overlap(chunks: &mut Vec<Chunk>) {
+#[allow(dead_code)] // called internally by index_workspace; pub(crate) for test access
+pub(crate) fn apply_overlap(chunks: &mut Vec<Chunk>) {
     let overlap = crate::config::Config::find()
         .ok()
         .map(|c| c.embedding.chunk_overlap)
@@ -74,28 +75,32 @@ fn apply_overlap(chunks: &mut Vec<Chunk>) {
             // Extend START backwards: read trailing lines from previous chunk's region
             if i > 0 {
                 let prev_idx = indices[i - 1];
-                let prev_end_line = chunks[prev_idx].line_end;
-                let cur_start_line = chunks[ci].line_start;
+                let prev_end_byte = chunks[prev_idx].line_end;
+                let cur_start_byte = chunks[ci].line_start;
 
-                if prev_end_line < cur_start_line {
+                if prev_end_byte < cur_start_byte {
                     if let Ok(content) = std::fs::read_to_string(&chunks[ci].file_path) {
-                        let all_lines: Vec<&str> = content.lines().collect();
-                        let end = (prev_end_line + overlap).min(cur_start_line);
+                        // Convert byte offsets to line numbers for indexing into content.lines()
+                        let byte_to_line = |byte_offset: usize| -> usize {
+                            content[..byte_offset].lines().count()
+                        };
+                        let prev_end_line = byte_to_line(prev_end_byte);
+                        let cur_start_line = byte_to_line(cur_start_byte);
 
                         // Read context lines that fall between previous chunk and current chunk's start,
                         // but don't exceed the previous chunk's own region.
                         // We take lines from prev_end_line up to min(prev_end_line + overlap, cur_start_line)
                         let safe_end = (prev_end_line + overlap).min(cur_start_line);
                         let context_lines: Vec<String> = (prev_end_line..safe_end)
-                            .filter(|&l| l < all_lines.len())
-                            .map(|l| all_lines[l].to_string())
+                            .filter(|&l| l < content.lines().count())
+                            .map(|l| content.lines().nth(l).unwrap_or("").to_string())
                             .collect();
 
                         if !context_lines.is_empty() {
                             // Insert a separator line, then prepend context
                             let ctx = context_lines.join("\n");
                             chunks[ci].text = format!("{}\n---\n{}", ctx, chunks[ci].text);
-                            chunks[ci].line_start = prev_end_line;
+                            chunks[ci].line_start = prev_end_byte;
 
                             // Also update the embedding cache key — text has changed now
                         }
@@ -106,18 +111,24 @@ fn apply_overlap(chunks: &mut Vec<Chunk>) {
             // Extend END forwards: read leading lines from next chunk's region
             if i + 1 < n {
                 let ni = indices[i + 1];
-                let cur_end_line = chunks[ci].line_end;
-                let next_start_line = chunks[ni].line_start;
+                let cur_end_byte = chunks[ci].line_end;
+                let next_start_byte = chunks[ni].line_start;
 
-                if cur_end_line < next_start_line {
+                if cur_end_byte < next_start_byte {
                     if let Ok(content) = std::fs::read_to_string(&chunks[ci].file_path) {
-                        let all_lines: Vec<&str> = content.lines().collect();
+                        // Convert byte offsets to line numbers for indexing into content.lines()
+                        let byte_to_line = |byte_offset: usize| -> usize {
+                            content[..byte_offset].lines().count()
+                        };
+                        let cur_end_line = byte_to_line(cur_end_byte);
+                        let next_start_line = byte_to_line(next_start_byte);
+
                         // Take lines from current chunk's end up to min(current_end + overlap, next_chunk_start)
                         let safe_end = (cur_end_line + overlap).min(next_start_line);
 
                         let appended: String = (cur_end_line..safe_end)
-                            .filter(|&l| l < all_lines.len())
-                            .map(|l| all_lines[l].to_string())
+                            .filter(|&l| l < content.lines().count())
+                            .map(|l| content.lines().nth(l).unwrap_or("").to_string())
                             .collect::<Vec<_>>()
                             .join("\n");
 
@@ -126,7 +137,7 @@ fn apply_overlap(chunks: &mut Vec<Chunk>) {
                         }
 
                         // Update line_end to reflect the extension
-                        let ext_lines: usize = (cur_end_line..safe_end).filter(|&l| l < all_lines.len()).count();
+                        let ext_lines: usize = (cur_end_line..safe_end).filter(|&l| l < content.lines().count()).count();
                         if ext_lines > 0 {
                             chunks[ci].line_end += ext_lines;
                         }

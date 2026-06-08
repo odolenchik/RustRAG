@@ -1,6 +1,9 @@
 pub mod cmd;
 
 use anyhow::Result;
+use std::io::Write as _;
+use futures_util::StreamExt;
+use rust_rag_llm::ChatBackend;
 use rust_rag_core::{indexer, vector_store};
 
 /// Run the index pipeline on a workspace directory.
@@ -135,9 +138,71 @@ pub fn ask(query: &str, workspace_root: Option<&str>) -> Result<()> {
     );
 
     // Call LLM — uses config endpoint/model from .rustrag.toml (or env vars / defaults)
-    println!("\nAsking LLM...\n");
+    print!("\nAsking LLM...\n\n");
     let response = rust_rag_llm::ollama_client::LlmClient::chat(&system_prompt, &user_message)?;
     println!("{}", response);
+
+    Ok(())
+}
+
+/// Run the ask pipeline with streaming output.
+pub async fn ask_stream(query: &str, workspace_root: Option<&str>) -> Result<()> {
+    let ws = if let Some(path) = workspace_root {
+        std::path::PathBuf::from(path)
+    } else {
+        std::env::current_dir()?
+    };
+
+    let cfg = rust_rag_core::config::Config::load(&ws).unwrap_or_default();
+    let top_k: usize = cfg.llm_config().top_k;
+
+    let store_path = ws.join(".rustrag");
+    let index_path = store_path.join("index.jsonl");
+
+    if !index_path.exists() {
+        anyhow::bail!("No index found. Run `rust-rag index <path>` first.");
+    }
+
+    let embedding: Vec<f32> = rust_rag_core::embedding::embed(query)?;
+    let store = rust_rag_core::vector_store::VectorStore::open(&store_path)?;
+    let results = store.hybrid_search(&embedding, query, top_k, 0.7, None)?;
+
+    let mut context_parts: Vec<String> = Vec::new();
+    for (i, r) in results.iter().enumerate() {
+        context_parts.push(format!(
+            "[[{}:{}]]\n{}",
+            r.file_path.display(), r.line_start, r.text
+        ));
+        println!("Result {}: hybrid_score={:.3} | {}:{}", i + 1, r.score as f64, r.file_path.display(), r.line_start);
+    }
+
+    let context = if context_parts.is_empty() {
+        "No relevant code chunks found.".to_string()
+    } else {
+        context_parts.join("\n\n")
+    };
+
+    let system_prompt = "You are a Rust code analysis assistant. Answer questions based on the provided code snippets. Always cite file paths and line numbers when referencing code.";
+    let user_message = format!(
+        "Question: {}\n\nRelevant code:\n{}",
+        query, context
+    );
+
+    print!("\nAsking LLM...\n\n");
+    let client = rust_rag_llm::ollama_client::LlmClient::default();
+    let mut stream = client.complete_stream_chunks(system_prompt, &user_message);
+
+    while let Some(chunk) = stream.next().await {
+        match chunk {
+            Ok(text) => print!("{}", text),
+            Err(e) => {
+                println!("\nError: {}", e);
+                break;
+            }
+        }
+        std::io::stdout().lock().flush()?;
+    }
+    println!();
 
     Ok(())
 }
