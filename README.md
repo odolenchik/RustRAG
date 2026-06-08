@@ -1,4 +1,4 @@
-# RustRAG
+# RustRAG v0.7.7
 
 **Local RAG for Rust codebases — full offline embeddings, hybrid BM25+vector search, MCP server.**
 
@@ -13,8 +13,8 @@ A self-hosted Retrieval-Augmented Generation tool built specifically for analyzi
 - **Configurable chunk overlap** — adjacent AST-extracted chunks within a file get overlapping context lines to preserve cross-boundary semantics (function calls, macro invocations spanning chunk edges)
 - **Call graph analysis** — AST-based call edge extraction using `ra_ap_syntax` (rust-analyzer's syntax crate); parses each chunk to find CallExpr nodes and extract callee names
 - **MCP server** — Model Context Protocol stdio server exposing `rag_search` and `rag_query` tools for AI coding agents (Claude Desktop, Cursor, Windsurf, etc.)
-- **Interactive TUI** — ratatui-based terminal interface with scrollable results, LLM answer pane, and keyboard navigation
-- **HTTP API + CORS** — axum server with `/search`, `/query`, and `/status` endpoints; cross-origin support for browser clients
+- **Interactive TUI** — ratatui-based terminal interface with scrollable results, real-time streaming LLM answers, and keyboard navigation
+- **HTTP API + CORS** — axum server with `/search`, `/query`, `/query/stream`, and `/status` endpoints; SSE streaming support; cross-origin support for browser clients
 - **Configurable via TOML** — `.rustrag.toml` at workspace root controls embedding model path, LLM endpoint/model, top_k, chunk overlap
 
 ## Architecture
@@ -26,7 +26,7 @@ Five independent crates in a Cargo workspace:
 | `rust-rag-core` | Core engine: indexing (tree-sitter), embedding (fastembed/ONNX), vector store (JSONL + BM25), retrieval, call graph analysis, config |
 | `rust-rag-cli` | CLI binary (`rust-rag`) with subcommands for index/ask/chat/reindex/info/clean |
 | `rust-rag-server` | HTTP API server (axum) and MCP stdio server; exposes search, query, and status endpoints |
-| `rust-rag-llm` | LLM client abstraction supporting OpenAI-compatible / Ollama backends with async streaming |
+| `rust-rag-llm` | LLM client abstraction supporting OpenAI-compatible / Ollama backends with SSE streaming support |
 | `rust-rag-tui` | Interactive terminal UI built on ratatui + crossterm with scrollable results and answer pane |
 
 ## Quick Start
@@ -90,8 +90,8 @@ RUSRAG_WORKSPACE=/workspace/path ./target/release/rust-rag-serve mcp
 | `reindex <path>` | Remove old `.rustrag/` directory, then run full indexing pipeline | `rust-rag reindex /workspace` |
 | `info [-p path]` | Show metadata: total indexed chunks and unique files list | `rust-rag info -p /workspace` |
 | `clean [-p path]` | Remove `.rustrag/` directory entirely | `rust-rag clean -p /workspace` |
-| `ask <query> [-p path]` | Ask a question; returns LLM answer with cited source locations | `rust-rag ask "Where is config loaded?"` |
-| `chat [-p path]` | Interactive TUI chat session with scrollable results and LLM answers | `rust-rag chat -p /workspace` |
+| `ask <query> [-p path] [--stream]` | Ask a question; returns LLM answer with cited source locations. Use --stream for incremental streaming output | `rust-rag ask "Where is config loaded?" --stream` |
+| `chat [-p path]` | Interactive TUI chat session with scrollable results and LLM answers (supports live streaming) | `rust-rag chat -p /workspace/path` |
 
 ## Server API
 
@@ -134,6 +134,14 @@ RUSRAG_WORKSPACE=/workspace/path ./target/release/rust-rag-serve mcp
   ]
 }
 ```
+
+**GET `/query/stream`** — Streamed LLM answer via Server-Sent Events (SSE). Returns incremental text chunks with `text/event-stream` content type. Query params: `question`, `top_k`.
+
+```bash
+curl -H 'Accept: text/event-stream' "http://localhost:8090/query/stream?question=How+does+embedding+work"
+# SSE stream of LLM response tokens
+```
+
 
 ### MCP Protocol
 
@@ -202,7 +210,7 @@ cargo test --package rust-rag-core
 3. **Embedding** — each chunk text is embedded via fastembed's ONNX runtime; results are cached in JSONL for incremental updates
 4. **Vector store** — embeddings + metadata stored as JSONL with an in-memory BM25 inverted index built lazily at query time
 5. **Retrieval** — hybrid search combines cosine similarity (vector) and BM25 text scoring via alpha-weighted blend; filters by symbol kind or file extension applied post-ranking
-6. **LLM answer** — retrieved context is assembled with citations and sent to the configured LLM endpoint
+6. **LLM answer** — retrieved context is assembled with citations and sent to the configured LLM endpoint; supports both full-response and SSE streaming modes
 
 ## License
 
