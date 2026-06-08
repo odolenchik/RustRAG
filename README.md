@@ -69,7 +69,7 @@ This runs the full pipeline: AST extraction → embedding → vector store creat
 ./target/release/rust-rag ask "How does the call graph work?" -p /workspace/path
 
 # Interactive TUI chat session
-./target/release/rust-rag chat -p /workspace/path
+./target/release/rust-rag chat -p /workspace
 ```
 
 ### Start HTTP API server
