@@ -1,0 +1,23 @@
+[package]
+name = "rust-rag-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "rust-rag"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+clap = { version = "4.5", features = ["derive"] }
+rust-rag-core = { path = "../core" }
+rust-rag-llm = { path = "../llm" }
+rust-rag-tui = { path = "../tui" }
+
+# Embedding: use online mode (no ort/ONNX needed) — pin to v4 which has compatible ort
+fastembed = { version = "=4.0.0", default-features = false, features = ["online"] }

@@ -1,0 +1,209 @@
+# RustRAG
+
+**Local RAG for Rust codebases — full offline embeddings, hybrid BM25+vector search, MCP server.**
+
+A self-hosted Retrieval-Augmented Generation tool built specifically for analyzing Rust Cargo workspaces. Index any workspace using AST-level semantic chunking (tree-sitter), embed with a local ONNX model, and query via CLI, interactive TUI, HTTP API, or MCP protocol — entirely offline once models are downloaded.
+
+## Features
+
+- **AST-aware indexing** — tree-sitter-rust parses source files into semantic chunks (functions, impl blocks, unsafe regions, traits, modules, structs, enums, macros) instead of naive fixed-size text splits
+- **Hybrid search (BM25 + vector)** — full inverted index with standard BM25 scoring combined with cosine similarity via configurable alpha blending (~0.7 recommended)
+- **Fully local embeddings** — fastembed ONNX runtime runs `bge-small-en-v1.5` locally; no external API calls needed for embedding computation
+- **Embedding cache** — JSONL-based persistent cache prevents redundant ONNX inference across re-indexes and workspace reloads
+- **Configurable chunk overlap** — adjacent AST-extracted chunks within a file get overlapping context lines to preserve cross-boundary semantics (function calls, macro invocations spanning chunk edges)
+- **Call graph analysis** — AST-based call edge extraction using `ra_ap_syntax` (rust-analyzer's syntax crate); parses each chunk to find CallExpr nodes and extract callee names
+- **MCP server** — Model Context Protocol stdio server exposing `rag_search` and `rag_query` tools for AI coding agents (Claude Desktop, Cursor, Windsurf, etc.)
+- **Interactive TUI** — ratatui-based terminal interface with scrollable results, LLM answer pane, and keyboard navigation
+- **HTTP API + CORS** — axum server with `/search`, `/query`, and `/status` endpoints; cross-origin support for browser clients
+- **Configurable via TOML** — `.rustrag.toml` at workspace root controls embedding model path, LLM endpoint/model, top_k, chunk overlap
+
+## Architecture
+
+Five independent crates in a Cargo workspace:
+
+| Crate | Purpose |
+|-------|---------|
+| `rust-rag-core` | Core engine: indexing (tree-sitter), embedding (fastembed/ONNX), vector store (JSONL + BM25), retrieval, call graph analysis, config |
+| `rust-rag-cli` | CLI binary (`rust-rag`) with subcommands for index/ask/chat/reindex/info/clean |
+| `rust-rag-server` | HTTP API server (axum) and MCP stdio server; exposes search, query, and status endpoints |
+| `rust-rag-llm` | LLM client abstraction supporting OpenAI-compatible / Ollama backends with async streaming |
+| `rust-rag-tui` | Interactive terminal UI built on ratatui + crossterm with scrollable results and answer pane |
+
+## Quick Start
+
+### Prerequisites
+
+- **Rust 1.85+** (MSRV: edition 2021)
+- A running LLM server at the configured endpoint (e.g., Ollama on `localhost:11434`, or llama.cpp with `/chat/completions`)
+- ~127 MB for embedding model (`bge-small-en-v1.5` ONNX)
+
+### Installation
+
+```bash
+cargo build --release
+# Produces: target/release/rust-rag (CLI/TUI) and target/release/rust-rag-serve (HTTP/MCP server)
+```
+
+### Configure
+
+Copy the example config to your workspace root:
+
+```bash
+cp .rustrag.toml.example .rustrag.toml
+```
+
+Edit `.rustrag.toml` for your embedding model path, LLM endpoint, and other settings. Environment variables take precedence where applicable (`RUSRAG_MODEL_PATH`, `LLAMA_ENDPOINT`, `LLAMA_MODEL`).
+
+### Index a workspace
+
+```bash
+./target/release/rust-rag index /path/to/cargo/workspace
+```
+
+This runs the full pipeline: AST extraction → embedding → vector store creation with caching.
+
+### Ask a question
+
+```bash
+# Single query (returns LLM answer)
+./target/release/rust-rag ask "How does the call graph work?" -p /workspace/path
+
+# Interactive TUI chat session
+./target/release/rust-rag chat -p /workspace/path
+```
+
+### Start HTTP API server
+
+```bash
+# Defaults to port 8090; set workspace via env var or CWD
+./target/release/rust-rag-serve serve --port 8090
+
+# MCP stdio server (for AI coding agents)
+RUSRAG_WORKSPACE=/workspace/path ./target/release/rust-rag-serve mcp
+```
+
+## CLI Reference
+
+| Command | Description | Usage |
+|---------|-------------|-------|
+| `index <path>` | Full indexing pipeline: AST extraction → ONNX embedding → vector store creation | `rust-rag index /workspace` |
+| `reindex <path>` | Remove old `.rustrag/` directory, then run full indexing pipeline | `rust-rag reindex /workspace` |
+| `info [-p path]` | Show metadata: total indexed chunks and unique files list | `rust-rag info -p /workspace` |
+| `clean [-p path]` | Remove `.rustrag/` directory entirely | `rust-rag clean -p /workspace` |
+| `ask <query> [-p path]` | Ask a question; returns LLM answer with cited source locations | `rust-rag ask "Where is config loaded?"` |
+| `chat [-p path]` | Interactive TUI chat session with scrollable results and LLM answers | `rust-rag chat -p /workspace` |
+
+## Server API
+
+### HTTP Endpoints
+
+**GET `/status`** — Workspace metadata (total chunks, index path)
+
+**POST `/search`** — Hybrid semantic search
+```json
+// Request
+{"query": "embedding model initialization", "top_k": 5}
+
+// Response
+{
+  "results": [
+    {
+      "id": "chunk_path/file.rs_42",
+      "file_path": "...",
+      "line_start": 42,
+      "line_end": 50,
+      "module_name": "init_embedding_model",
+      "symbol_kind": "Function",
+      "text": "...",
+      "score": 0.87
+    }
+  ]
+}
+```
+
+**POST `/query`** — Full RAG with LLM answer and citations
+```json
+// Request
+{"question": "How does the embedding cache work?"}
+
+// Response
+{
+  "answer": "The EmbedCache stores...",
+  "citations": [
+    { "file_path": "...", "line_start": 30, "line_end": 45, "text": "..." }
+  ]
+}
+```
+
+### MCP Protocol
+
+Implements **MCP stdio transport** (protocol version `2024-11-05`) with two tools:
+
+| Tool | Description |
+|------|-------------|
+| `rag_search` | Returns raw search results with BM25+vector scores and metadata |
+| `rag_query` | Full RAG pipeline — retrieves relevant chunks, builds context, returns LLM answer with citations |
+
+## Configuration
+
+All settings in `.rustrag.toml` at workspace root:
+
+```toml
+[embedding]
+# Directory containing model.onnx, tokenizer.json, config.json, etc.
+model_path = "./Download"
+
+# Adjacent lines to include before/after each chunk (0 = exact AST boundaries)
+chunk_overlap = 3
+
+[llm]
+# OpenAI-compatible /chat/completions endpoint (supports Ollama too)
+endpoint = "http://localhost:8080"
+model = "Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-IQ3_M.gguf"
+top_k = 5
+```
+
+**Environment variable overrides** (highest priority):
+
+| Variable | Applies To | Default |
+|----------|-----------|---------|
+| `RUSRAG_MODEL_PATH` | Embedding model path (above config file) | — |
+| `LLAMA_ENDPOINT` | LLM HTTP endpoint | from config or default |
+| `LLAMA_MODEL` | LLM model name | from config or default |
+| `RUSRAG_WORKSPACE` | Server workspace root | current directory |
+
+## TUI Keyboard Shortcuts
+
+| Key | Action |
+|-----|--------|
+| Any printable char | Append to query input |
+| Backspace | Remove last character |
+| Enter | Run search with current query |
+| `q` / `Q` | Quit application |
+| Esc | Clear results, return to idle state |
+| Up/Down arrows | Navigate result list one item at a time |
+| PageUp / BackTab | Scroll up by 5 items |
+| PageDown | Scroll down by 5 items |
+| Home | Jump to first result / top of answer pane |
+| End | Jump to last result / bottom of answer pane |
+
+## Testing
+
+```bash
+cargo test --package rust-rag-core
+# Runs 25 tests covering: indexing, vector store roundtrip, cosine similarity,
+# hybrid search alpha blending, BM25 scoring, filters (symbol kind + file extension), edge cases
+```
+
+## How It Works
+
+1. **Indexing** — `walkdir` walks workspace members; tree-sitter-rust parses each `.rs` file into an AST; semantic nodes are extracted as chunks with metadata (file path, line range, module name, symbol kind)
+2. **Chunk overlap** — after extraction, adjacent chunks within the same file get context lines from neighbors to preserve cross-boundary semantics
+3. **Embedding** — each chunk text is embedded via fastembed's ONNX runtime; results are cached in JSONL for incremental updates
+4. **Vector store** — embeddings + metadata stored as JSONL with an in-memory BM25 inverted index built lazily at query time
+5. **Retrieval** — hybrid search combines cosine similarity (vector) and BM25 text scoring via alpha-weighted blend; filters by symbol kind or file extension applied post-ranking
+6. **LLM answer** — retrieved context is assembled with citations and sent to the configured LLM endpoint
+
+## License
+
+MIT

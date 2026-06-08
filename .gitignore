@@ -1,0 +1,27 @@
+# Build artifacts
+/target/
+
+# ONNX model files (~127MB each)
+*.onnx
+*.safetensors
+
+# Rust analyzer / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# Cache and model files
+.fastembed_cache/
+.rustrag/
+crates/*/.rustrag/
+*.cache
+*.bin
+*.onnx
+
+# CI artifacts
+.cargo-cache/

@@ -1,0 +1,24 @@
+# RustRAG configuration file
+# Copy this to .rustrag.toml in your workspace root and adjust values.
+
+[embedding]
+# Directory containing model.onnx, tokenizer.json, config.json, etc.
+# If omitted, rust-rag searches for a Download/ directory relative to CARGO_MANIFEST_DIR.
+# Can also be overridden via RUSRAG_MODEL_PATH env var (highest priority).
+model_path = "./Download"
+
+# Number of adjacent lines to include before and after each AST-extracted chunk.
+# Preserves context at chunk boundaries where function calls or macro invocations
+# might span across chunks. Set to 0 for exact AST node boundaries only.
+chunk_overlap = 3
+
+[llm]
+# HTTP endpoint for the LLM server (OpenAI-compatible API: /chat/completions)
+# Also supports Ollama's /api/chat endpoint format.
+endpoint = "http://localhost:8080"
+
+# Model name used by the LLM server.
+model = "Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-IQ3_M.gguf"
+
+# Number of top results to return when querying (default: 5).
+top_k = 5
