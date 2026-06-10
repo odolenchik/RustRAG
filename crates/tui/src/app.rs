@@ -1,14 +1,12 @@
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::prelude::*;
-// Rectangle = Rect (from prelude)
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
-use rust_rag_core::vector_store::{SearchResult, VectorStore};
 use rust_rag_llm::ChatBackend;
-use std::path::PathBuf;
-use std::sync::mpsc;
 use std::sync::LazyLock;
 use std::time::Duration;
+
+// Re-export for backward compatibility
+pub use super::ui::LlmState;
 
 /// Shared static runtime for TUI LLM calls — created once and reused.
 static TUI_RT: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
@@ -31,28 +29,14 @@ fn load_top_k(workspace_root: &std::path::Path) -> usize {
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, PartialEq)]
-pub enum LlmState {
-    Idle,
-    Loading,
-    Done,  // Answer stored in `llm_answer` field
-    Error, // Error stored in `llm_answer` field
-}
-
-impl Default for LlmState {
-    fn default() -> Self {
-        Self::Idle
-    }
-}
-
-#[derive(Clone, PartialEq)]
 pub enum AppState {
     Idle,
     Searching,
     Results,
 }
 
+#[allow(clippy::enum_variant_names)]
 #[derive(Debug)]
-#[allow(clippy::enum_variant_names)] // all variants are LLM-related — prefix avoids collision with future events
 enum TuiEvent {
     LlmChunk(String),
     LlmDone,
@@ -62,29 +46,29 @@ enum TuiEvent {
 pub struct App {
     running: bool,
     query: String,
-    search_results: Vec<SearchResult>,
+    search_results: Vec<rust_rag_core::vector_store::SearchResult>,
     selected_result: usize,
-    llm_state: LlmState,
+    llm_state: super::ui::LlmState,
     llm_answer: Option<String>,
     llm_partial_answer: String, // accumulated text during streaming
     error_msg: Option<String>,
-    workspace_path: PathBuf,
+    workspace_path: std::path::PathBuf,
     app_state: AppState,
-    tx: mpsc::Sender<TuiEvent>,
-    rx: std::sync::Arc<std::sync::Mutex<mpsc::Receiver<TuiEvent>>>,
+    tx: std::sync::mpsc::Sender<TuiEvent>,
+    rx: std::sync::Arc<std::sync::Mutex<std::sync::mpsc::Receiver<TuiEvent>>>,
     // Scroll offset for LLM answer area.
     llm_scroll_offset: usize,
 }
 
 impl App {
     pub fn new(workspace_root: &std::path::Path) -> Self {
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = std::sync::mpsc::channel();
         Self {
             running: true,
             query: String::new(),
             search_results: Vec::new(),
             selected_result: 0,
-            llm_state: LlmState::Idle,
+            llm_state: super::ui::LlmState::Idle,
             llm_answer: None,
             llm_partial_answer: String::new(),
             error_msg: None,
@@ -123,7 +107,7 @@ impl App {
             }
         };
 
-        let store = match VectorStore::open(&store_path) {
+        let store = match rust_rag_core::vector_store::VectorStore::open(&store_path) {
             Ok(s) => s,
             Err(e) => {
                 self.error_msg = Some(format!("Vector store error: {}", e));
@@ -143,7 +127,7 @@ impl App {
         self.search_results = results;
         self.selected_result = 0;
         self.app_state = AppState::Results;
-        self.llm_state = LlmState::Loading;
+        self.llm_state = super::ui::LlmState::Loading;
 
         let system_prompt = rust_rag_core::constants::DEFAULT_SYSTEM_PROMPT;
         let context: String = self
@@ -185,21 +169,23 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyCode) {
+        // Delegate to editor component for input handling
+        match super::ui::editor::handle_key(key, &mut self.query) {
+            Some(super::ui::editor::Action::Quit) => self.running = false,
+            Some(super::ui::editor::Action::Submit) | None => {}
+        }
+        if matches!(key, KeyCode::Enter) && !self.query.is_empty() {
+            self.run_search();
+        } else {
+            // Already handled by editor; process navigation separately below
+        }
+
+        // Navigation keys not handled by editor component
         match key {
-            KeyCode::Char('q') | KeyCode::Char('Q') => self.running = false,
-            KeyCode::Char(c) => self.query.push(c),
-            KeyCode::Backspace => {
-                self.query.pop();
-            }
-            KeyCode::Enter => {
-                if !self.query.is_empty() {
-                    self.run_search();
-                }
-            }
             KeyCode::Esc => {
                 self.search_results.clear();
                 self.selected_result = 0;
-                self.llm_state = LlmState::Idle;
+                self.llm_state = super::ui::LlmState::Idle;
                 self.app_state = AppState::Idle;
             }
             // PageUp / PageDown: scroll results list and LLM answer area.
@@ -212,7 +198,8 @@ impl App {
                 }
                 // Also scroll LLM answer area.
                 if !self.search_results.is_empty()
-                    && (self.llm_state == LlmState::Done || self.llm_state == LlmState::Error)
+                    && (self.llm_state == super::ui::LlmState::Done
+                        || self.llm_state == super::ui::LlmState::Error)
                 {
                     let step = 3;
                     if self.llm_scroll_offset > step {
@@ -233,7 +220,8 @@ impl App {
                 }
                 // Also scroll LLM answer area.
                 if !self.search_results.is_empty()
-                    && (self.llm_state == LlmState::Done || self.llm_state == LlmState::Error)
+                    && (self.llm_state == super::ui::LlmState::Done
+                        || self.llm_state == super::ui::LlmState::Error)
                 {
                     let _max_scroll = self.llm_answer.as_ref().map_or(0, |a| a.lines().count());
                     let step = 3;
@@ -257,7 +245,27 @@ impl App {
     }
 
     fn draw(&mut self, frame: &mut Frame) {
-        let _area = frame.area();
+        // Process events from background thread first
+        if let Ok(rx) = self.rx.lock() {
+            while let Ok(event) = rx.try_recv() {
+                match event {
+                    TuiEvent::LlmChunk(chunk) => {
+                        self.llm_partial_answer.push_str(&chunk);
+                    }
+                    TuiEvent::LlmDone => {
+                        if !self.llm_partial_answer.is_empty() {
+                            self.llm_answer = Some(self.llm_partial_answer.clone());
+                            self.llm_state = super::ui::LlmState::Done;
+                        }
+                        self.llm_partial_answer.clear();
+                    }
+                    TuiEvent::LlmError(err) => {
+                        self.llm_state = super::ui::LlmState::Error;
+                        self.llm_answer = Some(format!("LLM Error: {}", err));
+                    }
+                }
+            }
+        }
 
         // Overall layout: title bar | output (results + LLM) | input line
         let main_chunks = Layout::vertical([
@@ -274,197 +282,29 @@ impl App {
         );
         frame.render_widget(title, main_chunks[0]);
 
-        // --- Process events from background thread ---
-        if let Ok(rx) = self.rx.lock() {
-            while let Ok(event) = rx.try_recv() {
-                match event {
-                    TuiEvent::LlmChunk(chunk) => {
-                        // Streaming chunk — append partial text and trigger redraw
-                        self.llm_partial_answer.push_str(&chunk);
-                    }
-                    TuiEvent::LlmDone => {
-                        // Stream complete — move accumulated answer into llm_answer
-                        if !self.llm_partial_answer.is_empty() {
-                            self.llm_answer = Some(self.llm_partial_answer.clone());
-                            self.llm_state = LlmState::Done;
-                        }
-                        self.llm_partial_answer.clear();
-                    }
-                    TuiEvent::LlmError(err) => {
-                        self.llm_state = LlmState::Error;
-                        self.llm_answer = Some(format!("LLM Error: {}", err));
-                    }
-                }
-            }
+        // --- Output area: delegate to transcript component ---
+        let transcript_data = super::ui::transcript::TranscriptComponent {
+            error_msg: self.error_msg.clone(),
+            search_results: std::mem::take(&mut self.search_results),
+            selected_result: self.selected_result,
+            llm_state: self.llm_state.clone(),
+            llm_answer: self.llm_answer.clone(),
+            llm_partial_answer: std::mem::take(&mut self.llm_partial_answer),
+            llm_scroll_offset: self.llm_scroll_offset,
+        };
+        transcript_data.draw(frame, main_chunks[1]);
+
+        // Restore search_results (TranscriptComponent took ownership via take)
+        if !transcript_data.search_results.is_empty() {
+            self.search_results = transcript_data.search_results;
         }
 
-        // --- Output area ---
-        if self.error_msg.is_some() {
-            let error_text = format!("! {}", self.error_msg.as_ref().unwrap());
-            let block = Block::default()
-                .title(" Error ")
-                .borders(Borders::ALL)
-                .style(Style::default().fg(Color::Red));
-            frame.render_widget(block, main_chunks[1]);
-
-            let error_paragraph =
-                Paragraph::new(Span::raw(&error_text)).style(Style::default().fg(Color::Yellow));
-            frame.render_widget(error_paragraph, main_chunks[1]);
-        } else if self.search_results.is_empty() {
-            let help_text = "Type a question and press Enter. Press 'q' to quit.";
-            let block = Block::default().borders(Borders::ALL);
-            frame.render_widget(block, main_chunks[1]);
-
-            let paragraph = Paragraph::new(Span::raw(help_text));
-            frame.render_widget(paragraph, main_chunks[1]);
-        } else {
-            // Split output area: top for results list, bottom for LLM answer
-            let output_area = main_chunks[1];
-            let llm_height = match &self.llm_state {
-                LlmState::Loading => 2u16,
-                LlmState::Done | LlmState::Error => 5,
-                _ => 0,
-            };
-            let results_h = output_area.height.saturating_sub(1 + llm_height);
-
-            // Top: search results (scrollable)
-            if results_h > 2 {
-                let results_rect = Rect {
-                    x: output_area.x,
-                    y: output_area.y,
-                    width: output_area.width,
-                    height: results_h,
-                };
-
-                let max_items = (results_h.saturating_sub(4) as usize).min(5); // at most 5 results shown at once
-                let items: Vec<ListItem> = self
-                    .search_results
-                    .iter()
-                    .skip(self.selected_result.saturating_sub(max_items))
-                    .take(max_items)
-                    .map(|r| {
-                        let line = format!(
-                            "[{:.2}] {}:{} - {}",
-                            r.score,
-                            r.file_path.display(),
-                            r.line_start,
-                            &r.text.chars().take(60).collect::<String>()
-                        );
-                        ListItem::new(Span::raw(line))
-                    })
-                    .collect();
-
-                let list = List::new(items).highlight_style(Style::default().bg(Color::DarkGray));
-                frame.render_widget(list, results_rect);
-            }
-
-            // Bottom: LLM status or answer (separate area below results)
-            if llm_height > 0 {
-                let llm_y = output_area.y + results_h + 1;
-                let remaining = output_area.height.saturating_sub(llm_y - output_area.y);
-                if remaining == 0 || remaining < 2 {
-                    return;
-                }
-
-                let llm_rect = Rect {
-                    x: output_area.x,
-                    y: llm_y,
-                    width: output_area.width.min(80),
-                    height: llm_height.min(remaining),
-                };
-
-                if self.llm_state == LlmState::Loading && !self.llm_partial_answer.is_empty() {
-                    // Show streaming partial answer with a blinking cursor indicator
-                    let display_text = format!("\u{258A} {}", self.llm_partial_answer);
-                    let llm_paragraph = Paragraph::new(Span::raw(display_text))
-                        .style(Style::default().fg(Color::Green));
-                    frame.render_widget(llm_paragraph, llm_rect);
-                } else if self.llm_state == LlmState::Loading {
-                    let loading_text = Paragraph::new(Span::raw("  LLM is thinking..."))
-                        .style(Style::default().fg(Color::Yellow));
-                    frame.render_widget(loading_text, llm_rect);
-                } else if self.llm_state == LlmState::Done {
-                    // Title bar for answer section
-                    let ans_block = Block::default()
-                        .title(" LLM Answer ")
-                        .borders(Borders::ALL)
-                        .style(Style::default().fg(Color::Green));
-                    frame.render_widget(ans_block, llm_rect);
-
-                    if let Some(answer) = &self.llm_answer {
-                        // Show answer with scroll offset — only display lines that fit.
-                        let total_lines: Vec<&str> = answer.lines().collect();
-                        let page_size = (llm_rect.height.saturating_sub(1)) as usize;
-                        let start = self.llm_scroll_offset.min(total_lines.len());
-                        let visible: Vec<String> = total_lines
-                            .iter()
-                            .skip(start)
-                            .take(page_size)
-                            .map(|l| l.to_string())
-                            .collect();
-                        let display_text = if visible.is_empty() {
-                            " (empty answer)".to_string()
-                        } else {
-                            visible.join("\n")
-                        };
-                        // Show scroll indicator.
-                        let full_display = if start < total_lines.len() - page_size {
-                            format!("{}\n... (scroll down for more)", display_text)
-                        } else if start > 0 {
-                            format!("... (scroll up to see more)\n{}", display_text)
-                        } else {
-                            display_text
-                        };
-
-                        let llm_paragraph = Paragraph::new(Span::raw(full_display))
-                            .style(Style::default().fg(Color::Green));
-                        frame.render_widget(llm_paragraph, llm_rect);
-                    }
-                } else if self.llm_state == LlmState::Error {
-                    let err_block = Block::default()
-                        .title(" LLM Error ")
-                        .borders(Borders::ALL)
-                        .style(Style::default().fg(Color::Red));
-                    frame.render_widget(err_block, llm_rect);
-
-                    if let Some(ref err_msg) = self.llm_answer {
-                        // Also scrollable for long error messages.
-                        let total_lines: Vec<&str> = err_msg.lines().collect();
-                        let page_size = (llm_rect.height.saturating_sub(1)) as usize;
-                        let start = self.llm_scroll_offset.min(total_lines.len());
-                        let visible: Vec<String> = total_lines
-                            .iter()
-                            .skip(start)
-                            .take(page_size)
-                            .map(|l| l.to_string())
-                            .collect();
-                        let display_text = if visible.is_empty() {
-                            " (empty)".to_string()
-                        } else {
-                            visible.join("\n")
-                        };
-
-                        let llm_err = Paragraph::new(Span::raw(display_text))
-                            .style(Style::default().fg(Color::Red));
-                        frame.render_widget(llm_err, llm_rect);
-                    }
-                }
-            }
-        }
-
-        // --- Input line --- prompt + query text
-        let prompt_text = format!("> {}", self.query);
-        let input_paragraph =
-            Paragraph::new(Span::raw(prompt_text)).style(Style::default().fg(Color::Yellow));
-        frame.render_widget(input_paragraph, main_chunks[2]);
-
-        // Position cursor at end of typed query
-        let cursor_x = 1 + (self.query.len() as u16);
-        let max_x = main_chunks[2].x + main_chunks[2].width.saturating_sub(1);
-        frame.set_cursor_position(Position {
-            x: cursor_x.min(max_x),
-            y: main_chunks[2].y,
-        });
+        // --- Input line: delegate to editor component ---
+        let editor_data = super::ui::editor::EditorComponent {
+            query: std::mem::take(&mut self.query),
+        };
+        editor_data.draw(frame, main_chunks[2]);
+        self.query = editor_data.query;
     }
 
     pub fn run(&mut self) -> Result<()> {

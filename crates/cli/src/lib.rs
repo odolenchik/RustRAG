@@ -1,5 +1,3 @@
-pub mod cmd;
-
 use anyhow::Result;
 use futures_util::StreamExt;
 use rust_rag_core::{state, vector_store};

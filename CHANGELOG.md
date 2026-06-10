@@ -3,7 +3,22 @@
 ## [Unreleased]
 
 ### Added
-- **JSON output flags** (`--json`) for `ask`, `symbol`, and `info` commands — structured JSON responses with query, answer/citations/results/metadata suitable for scripting. `ask --stream --json` collects the full streamed response into a single JSON document instead of streaming to stdout incrementally.
+- **CI/CD pipeline** (`.github/workflows/ci.yml`) with automated formatting, build, tests, clippy (`-D warnings`), and security audit on every push/PR
+- **LLM endpoint URL validation** (`validation.rs`) — blocks non-http(s) schemes, loopback, private IPs, cloud metadata URLs for SSRF protection
+- **BM25 inverted index caching** (`Bm25CacheEntry`, `get_bm25_cache()`) in `VectorStore` — avoids rebuilding the BM25 index on every query, dramatically improving search latency
+- **Rate limiting via Semaphore** (`AppState::rate_limiter`) — prevents thundering herd on `/search` and `/query` endpoints
+- **Request body size limits** on server API via `tower-http` middleware
+- **Path canonicalization** in CLI — `std::fs::canonicalize()` prevents path traversal vulnerabilities
+- **Modular TUI components** (`ui/editor.rs`, `ui/transcript.rs`) — extracted from monolithic 508-line `app.rs` into independently testable renderers
+
+### Changed
+- Unified `OutputMode` enum and `run_ask_impl()` in CLI crate — replaced duplicated ask/ask_json/ask_stream/ask_stream_json implementations with a single unified handler delegating to mode-specific branches
+- Moved `DEFAULT_SYSTEM_PROMPT` constant from 7+ duplicated locations into `crates/core/src/constants.rs` for single source of truth
+- Removed redundant `cmd/*.rs` dispatcher files — CLI main.rs now calls crate functions directly
+
+### Fixed
+- SSRF vulnerability: LLM endpoints now validated before client creation, blocking private IPs and cloud metadata URLs
+- TUI App struct split into component modules (editor, transcript) for better maintainability
 
 ## [0.7.8] - 2026-06-08
 
