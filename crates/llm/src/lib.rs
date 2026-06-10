@@ -1,4 +1,5 @@
 pub mod ollama_client;
+pub mod validation;
 
 use anyhow::Result;
 use futures_core::Stream;

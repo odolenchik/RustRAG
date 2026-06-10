@@ -113,6 +113,11 @@ pub struct LlmClient {
 impl LlmClient {
     /// Create a new client with the given base URL and model.
     pub fn new(base_url: &str, model: &str) -> Self {
+        // Validate endpoint before creating client — warns for localhost/private IPs but allows them for local dev
+        if let Err(e) = crate::validation::validate_endpoint(base_url) {
+            log::warn!("LLM endpoint validation warning: {}", e);
+        }
+
         let url = if !base_url.starts_with("http") {
             format!("http://{}/chat/completions", base_url)
         } else if base_url.ends_with("/chat/completions")

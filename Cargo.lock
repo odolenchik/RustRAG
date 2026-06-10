@@ -2616,6 +2616,7 @@ dependencies = [
  "async-trait",
  "futures-core",
  "futures-util",
+ "log",
  "reqwest",
  "rust-rag-core",
  "serde",
