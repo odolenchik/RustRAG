@@ -27,21 +27,36 @@ impl std::fmt::Debug for DocCacheEntry {
     }
 }
 
+/// Cached BM25 inverted index entry — invalidated when the index file changes.
+struct Bm25CacheEntry {
+    /// File mtime at cache creation time (for invalidation).
+    file_mtime: u64,
+    /// Number of documents in the index (for quick mismatch detection).
+    doc_count: usize,
+    /// Cached BM25 inverted index.
+    inverted_index: InvertedIndex,
+    /// Per-document statistics needed for BM25 normalization.
+    doc_stats: HashMap<String, DocStat>,
+}
+
 /// Persistent JSONL-based vector store for RustRAG indexing.
 pub struct VectorStore {
     pub path: PathBuf,
     /// Cache for lazy-loaded documents to avoid re-reading index.jsonl on every search.
     cache: RwLock<Option<DocCacheEntry>>,
+    /// BM25 inverted index cache — avoids rebuilding the inverted index on every query.
+    bm25_cache: RwLock<Option<Bm25CacheEntry>>,
 }
 
 impl VectorStore {
     /// Open or create a vector store at the given directory.
-    pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self> {
+   pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self> {
         let path = path.as_ref();
         std::fs::create_dir_all(path)?;
         Ok(VectorStore {
             path: path.to_path_buf(),
             cache: RwLock::new(None),
+            bm25_cache: RwLock::new(None),
         })
     }
 
@@ -173,10 +188,13 @@ impl VectorStore {
         Ok(documents)
     }
 
-    /// Invalidate the document cache (called after index updates).
+    /// Invalidate both the document cache and BM25 inverted index cache.
+    /// Called after index updates (insert/remove documents).
     pub fn invalidate_cache(&self) {
-        let mut cache = self.cache.write().unwrap();
-        *cache = None;
+        let mut doc_cache = self.cache.write().unwrap();
+        *doc_cache = None;
+        let mut bm25_cache = self.bm25_cache.write().unwrap();
+        *bm25_cache = None;
     }
 
     /// Search by embedding vector. Returns top-k results with relevance scores.
@@ -224,9 +242,9 @@ impl VectorStore {
             return Ok(Vec::new());
         }
 
-        // Build BM25 inverted index in-memory (fast for typical workspaces)
+        // Get cached or build BM25 inverted index (avoids rebuilding on every query)
         let (inverted, doc_stats): (InvertedIndex, HashMap<String, DocStat>) =
-            self.build_inverted_index(&documents)?;
+            self.get_bm25_cache(&documents)?;
 
         // Tokenize query text for BM25
         let query_tokens = tokenize(query_text);
@@ -383,6 +401,53 @@ impl VectorStore {
 
         Ok((inverted, doc_stats))
     }
+
+    /// Get the BM25 inverted index, using an in-memory cache to avoid rebuilding on every query.
+    /// The cache is invalidated when the index file mtime changes or document count differs.
+    fn get_bm25_cache(
+        &self,
+        documents: &[serde_json::Value],
+    ) -> Result<(InvertedIndex, HashMap<String, DocStat>)> {
+        let index_path = self.path.join("index.jsonl");
+
+        // Compute current file state for cache invalidation
+        let (current_mtime, doc_count) = if index_path.exists() {
+            let meta = std::fs::metadata(&index_path)?;
+            let mtime = meta
+                .modified()?
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_millis() as u64;
+            (mtime, documents.len())
+        } else {
+            (0, 0)
+        };
+
+        // Check cache hit: same mtime and same document count
+        {
+            let cache = self.bm25_cache.read().unwrap();
+            if let Some(entry) = &*cache {
+                if entry.file_mtime == current_mtime && entry.doc_count == doc_count {
+                    return Ok((entry.inverted_index.clone(), entry.doc_stats.clone()));
+                }
+            }
+        }
+
+        // Cache miss — build the inverted index and store it
+        let (inverted, doc_stats) = self.build_inverted_index(documents)?;
+
+        // Only cache if we have documents (empty index doesn't need caching)
+        if !documents.is_empty() {
+            let mut cache = self.bm25_cache.write().unwrap();
+            *cache = Some(Bm25CacheEntry {
+                file_mtime: current_mtime,
+                doc_count,
+                inverted_index: inverted.clone(),
+                doc_stats: doc_stats.clone(),
+            });
+        }
+
+        Ok((inverted, doc_stats))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -390,7 +455,7 @@ impl VectorStore {
 // ---------------------------------------------------------------------------
 
 /// A term posting: which document ids contain this term and how often.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Posting {
     doc_id: String,
     tf: f64, // term frequency in this document
@@ -400,7 +465,7 @@ struct Posting {
 type InvertedIndex = HashMap<String, Vec<Posting>>;
 
 /// Per-document statistics needed for BM25 normalization.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct DocStat {
     doc_len: f64, // number of tokens in this document
 }
