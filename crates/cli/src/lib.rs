@@ -62,6 +62,139 @@ pub fn run_retrieval_pipeline(
     Ok((results, context_text))
 }
 
+/// Output mode for retrieval and LLM results.
+#[derive(Clone, Copy, Debug)]
+pub enum OutputMode {
+    Text,
+    Json,
+}
+
+/// Unified ask implementation — retrieves chunks, builds context, calls LLM with specified output format.
+fn run_ask_impl(
+    query: &str,
+    workspace_root: Option<&str>,
+    mode: OutputMode,
+) -> Result<(Vec<vector_store::SearchResult>, String)> {
+    let (results, context) = run_retrieval_pipeline(query, workspace_root)?;
+
+    let system_prompt = rust_rag_core::constants::DEFAULT_SYSTEM_PROMPT;
+    let user_message = format!("Question: {}\n\nRelevant code:\n{}", query, context);
+
+    match mode {
+        OutputMode::Text => {
+            print!("\nAsking LLM...\n\n");
+            let response =
+                rust_rag_llm::ollama_client::LlmClient::chat(system_prompt, &user_message)?;
+            println!("{}", response);
+        }
+        OutputMode::Json => {
+            // Build citation list from results
+            let citations: Vec<serde_json::Value> = results.iter().map(|r| {
+                serde_json::json!({
+                    "file_path": r.file_path.to_string_lossy(),
+                    "line_start": r.line_start,
+                    "line_end": r.line_end,
+                    "module_name": r.module_name,
+                    "symbol_kind": match &r.symbol_kind {
+                        Some(sk) => serde_json::to_value(sk).unwrap_or_else(|_| serde_json::json!("<unknown>")),
+                        None => serde_json::json!("<unknown>"),
+                    },
+                    "text": r.text.clone(),
+                })
+            }).collect();
+
+            let response =
+                rust_rag_llm::ollama_client::LlmClient::chat(system_prompt, &user_message)?;
+
+            let output = serde_json::json!({
+                "query": query,
+                "answer": response,
+                "citations": citations,
+                "relevant_chunks_count": results.len(),
+            });
+
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        }
+    }
+
+    Ok((results, context))
+}
+
+/// Stream ask implementation — retrieves chunks and streams LLM response.
+async fn run_ask_stream_impl(query: &str, workspace_root: Option<&str>) -> Result<()> {
+    let (results, context) = run_retrieval_pipeline(query, workspace_root)?;
+
+    let system_prompt = rust_rag_core::constants::DEFAULT_SYSTEM_PROMPT;
+    let user_message = format!("Question: {}\n\nRelevant code:\n{}", query, context);
+
+    print!("\nAsking LLM...\n\n");
+    let client = rust_rag_llm::ollama_client::LlmClient::from_config();
+    let mut stream = client.complete_stream_chunks(system_prompt, &user_message);
+
+    while let Some(chunk) = stream.next().await {
+        match chunk {
+            Ok(text) => print!("{}", text),
+            Err(e) => {
+                println!("\nError: {}", e);
+                break;
+            }
+        }
+        std::io::stdout().lock().flush()?;
+    }
+    println!();
+
+    let _ = results;
+
+    Ok(())
+}
+
+/// Unified ask with streaming + JSON output.
+async fn run_ask_stream_json_impl(query: &str, workspace_root: Option<&str>) -> Result<()> {
+    let (results, context) = run_retrieval_pipeline(query, workspace_root)?;
+
+    let system_prompt = rust_rag_core::constants::DEFAULT_SYSTEM_PROMPT;
+    let user_message = format!("Question: {}\n\nRelevant code:\n{}", query, context);
+
+    // Collect streamed response
+    let client = rust_rag_llm::ollama_client::LlmClient::from_config();
+    let mut stream = client.complete_stream_chunks(system_prompt, &user_message);
+    let mut collected = String::new();
+    while let Some(chunk) = stream.next().await {
+        match chunk {
+            Ok(text) => collected.push_str(&text),
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                break;
+            }
+        }
+    }
+
+    // Build citation list from results
+    let citations: Vec<serde_json::Value> = results.iter().map(|r| {
+        serde_json::json!({
+            "file_path": r.file_path.to_string_lossy(),
+            "line_start": r.line_start,
+            "line_end": r.line_end,
+            "module_name": r.module_name,
+            "symbol_kind": match &r.symbol_kind {
+                Some(sk) => serde_json::to_value(sk).unwrap_or_else(|_| serde_json::json!("<unknown>")),
+                None => serde_json::json!("<unknown>"),
+            },
+            "text": r.text.clone(),
+        })
+    }).collect();
+
+    let output = serde_json::json!({
+        "query": query,
+        "answer": collected,
+        "citations": citations,
+        "relevant_chunks_count": results.len(),
+    });
+
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
 /// Run the index pipeline on a workspace directory with incremental updates.
 pub fn index_workspace(path: &str) -> Result<()> {
     let workspace_root = std::path::PathBuf::from(path);
@@ -274,128 +407,29 @@ fn collect_rs_hashes(dir: &Path, files: &mut HashMap<std::path::PathBuf, String>
 
 /// Run the ask pipeline: retrieve relevant chunks and generate LLM answer.
 pub fn ask(query: &str, workspace_root: Option<&str>) -> Result<()> {
-    let (_results, context) = run_retrieval_pipeline(query, workspace_root)?;
-
-    let system_prompt = rust_rag_core::constants::DEFAULT_SYSTEM_PROMPT;
-    let user_message = format!("Question: {}\n\nRelevant code:\n{}", query, context);
-
-    print!("\nAsking LLM...\n\n");
-    let response = rust_rag_llm::ollama_client::LlmClient::chat(system_prompt, &user_message)?;
-    println!("{}", response);
-
+    run_ask_impl(query, workspace_root, OutputMode::Text)?;
     Ok(())
 }
 
 /// Run the ask pipeline with streaming output.
 pub async fn ask_stream(query: &str, workspace_root: Option<&str>) -> Result<()> {
-    let (results, context) = run_retrieval_pipeline(query, workspace_root)?;
-
-    let system_prompt = rust_rag_core::constants::DEFAULT_SYSTEM_PROMPT;
-    let user_message = format!("Question: {}\n\nRelevant code:\n{}", query, context);
-
-    print!("\nAsking LLM...\n\n");
-    let client = rust_rag_llm::ollama_client::LlmClient::from_config();
-    let mut stream = client.complete_stream_chunks(system_prompt, &user_message);
-
-    while let Some(chunk) = stream.next().await {
-        match chunk {
-            Ok(text) => print!("{}", text),
-            Err(e) => {
-                println!("\nError: {}", e);
-                break;
-            }
-        }
-        std::io::stdout().lock().flush()?;
-    }
-    println!();
-
-    let _ = results;
-
-    Ok(())
+    run_ask_stream_impl(query, workspace_root).await
 }
 
 /// Run the ask pipeline with JSON output.
 pub fn ask_json(query: &str, workspace_root: Option<&str>) -> Result<()> {
-    let (results, context) = run_retrieval_pipeline(query, workspace_root)?;
-
-    let system_prompt = rust_rag_core::constants::DEFAULT_SYSTEM_PROMPT;
-    let user_message = format!("Question: {}\n\nRelevant code:\n{}", query, context);
-
-    // Suppress result headers in JSON mode — they go to stdout already from pipeline;
-    // but for cleaner output we re-run silently. Actually, the pipeline prints them once.
-    // Build citation list from results
-    let citations: Vec<serde_json::Value> = results.iter().map(|r| {
-        serde_json::json!({
-            "file_path": r.file_path.to_string_lossy(),
-            "line_start": r.line_start,
-            "line_end": r.line_end,
-            "module_name": r.module_name,
-            "symbol_kind": match &r.symbol_kind {
-                Some(sk) => serde_json::to_value(sk).unwrap_or_else(|_| serde_json::json!("<unknown>")),
-                None => serde_json::json!("<unknown>"),
-            },
-            "text": r.text.clone(),
-        })
-    }).collect();
-
-    let response = rust_rag_llm::ollama_client::LlmClient::chat(system_prompt, &user_message)?;
-
-    let output = serde_json::json!({
-        "query": query,
-        "answer": response,
-        "citations": citations,
-        "relevant_chunks_count": results.len(),
-    });
-
-    println!("{}", serde_json::to_string_pretty(&output)?);
+    run_ask_impl(query, workspace_root, OutputMode::Json)?;
     Ok(())
 }
 
 /// Run the ask pipeline with streaming output and JSON.
+async fn _ask_stream_json_internal(query: &str, workspace_root: Option<&str>) -> Result<()> {
+    run_ask_stream_json_impl(query, workspace_root).await
+}
+
+// Re-export as public for backward compatibility
 pub async fn ask_stream_json(query: &str, workspace_root: Option<&str>) -> Result<()> {
-    let (results, context) = run_retrieval_pipeline(query, workspace_root)?;
-
-    let system_prompt = rust_rag_core::constants::DEFAULT_SYSTEM_PROMPT;
-    let user_message = format!("Question: {}\n\nRelevant code:\n{}", query, context);
-
-    // Collect streamed response
-    let client = rust_rag_llm::ollama_client::LlmClient::from_config();
-    let mut stream = client.complete_stream_chunks(system_prompt, &user_message);
-    let mut collected = String::new();
-    while let Some(chunk) = stream.next().await {
-        match chunk {
-            Ok(text) => collected.push_str(&text),
-            Err(e) => {
-                eprintln!("Error: {}", e);
-                break;
-            }
-        }
-    }
-
-    // Build citation list from results
-    let citations: Vec<serde_json::Value> = results.iter().map(|r| {
-        serde_json::json!({
-            "file_path": r.file_path.to_string_lossy(),
-            "line_start": r.line_start,
-            "line_end": r.line_end,
-            "module_name": r.module_name,
-            "symbol_kind": match &r.symbol_kind {
-                Some(sk) => serde_json::to_value(sk).unwrap_or_else(|_| serde_json::json!("<unknown>")),
-                None => serde_json::json!("<unknown>"),
-            },
-            "text": r.text.clone(),
-        })
-    }).collect();
-
-    let output = serde_json::json!({
-        "query": query,
-        "answer": collected,
-        "citations": citations,
-        "relevant_chunks_count": results.len(),
-    });
-
-    println!("{}", serde_json::to_string_pretty(&output)?);
-    Ok(())
+    _ask_stream_json_internal(query, workspace_root).await
 }
 
 /// Re-index a workspace: delete old index, then run full indexing pipeline.
