@@ -275,16 +275,17 @@ impl EmbedCache {
 
         let mut cache = self.read_cache()?;
         for (text, embedding) in texts.iter().zip(embeddings.iter()) {
-            if cache.contains_key(&hash_text(text)) {
-                *hit_count += 1;
+            if let std::collections::hash_map::Entry::Vacant(e) = cache.entry(hash_text(text)) {
+                e.insert(embedding.clone());
             } else {
-                cache.insert(hash_text(text), embedding.clone());
+                *hit_count += 1;
             }
         }
 
         let file = std::fs::OpenOptions::new()
             .write(true)
             .create(true)
+            .truncate(true)
             .open(&self.path)?;
         let mut writer = std::io::BufWriter::new(file);
 
@@ -311,7 +312,7 @@ impl EmbedCache {
 /// Get the path where embedding models are stored (kept for backward compatibility).
 pub fn model_cache_dir() -> Result<PathBuf> {
     let base = dirs::cache_dir()
-        .or_else(|| dirs::data_local_dir())
+        .or_else(dirs::data_local_dir)
         .unwrap_or_else(|| PathBuf::from("/tmp/.rustrag/cache"));
 
     let dir = base.join("rustrag");
@@ -361,7 +362,7 @@ pub fn download_model(target: &Path) -> Result<()> {
         println!(
             "  -> {} ({} bytes)",
             local_name,
-            bytes.len().try_into().unwrap_or(std::u64::MAX)
+            bytes.len().try_into().unwrap_or(u64::MAX)
         );
         std::fs::write(target.join(local_name), &bytes)?;
     }

@@ -158,7 +158,7 @@ impl VectorStore {
         let documents: Vec<serde_json::Value> = content
             .lines()
             .filter(|line| !line.trim().is_empty())
-            .map(|line| serde_json::from_str(line))
+            .map(serde_json::from_str)
             .collect::<Result<Vec<_>, _>>()?;
 
         // Update cache and return a clone for the caller
@@ -234,7 +234,7 @@ impl VectorStore {
         // Compute average document length for BM25 normalization
         let total_docs = documents.len();
         let avgdl: f64 =
-            doc_stats.values().map(|s| s.doc_len as f64).sum::<f64>() / total_docs.max(1) as f64;
+            doc_stats.values().map(|s| s.doc_len).sum::<f64>() / total_docs.max(1) as f64;
 
         // Score each document with both vector similarity and BM25.
         // Stores (combined_score, vec_similarity_f32, original_index) so we don't recompute cosine sim.

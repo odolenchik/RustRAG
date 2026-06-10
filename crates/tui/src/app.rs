@@ -22,7 +22,7 @@ static TUI_RT: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
 fn load_top_k(workspace_root: &std::path::Path) -> usize {
     rust_rag_core::config::Config::load(workspace_root)
         .ok()
-        .and_then(|c| Some(c.llm_config().top_k))
+        .map(|c| c.llm_config().top_k)
         .unwrap_or(5)
 }
 
@@ -52,6 +52,7 @@ pub enum AppState {
 }
 
 #[derive(Debug)]
+#[allow(clippy::enum_variant_names)] // all variants are LLM-related — prefix avoids collision with future events
 enum TuiEvent {
     LlmChunk(String),
     LlmDone,
@@ -156,10 +157,10 @@ impl App {
         std::thread::spawn(move || {
             // LLM client reads endpoint/model from .rustrag.toml (via Config::find())
             // Use the shared runtime instead of creating a new one per request.
-            let client = rust_rag_llm::ollama_client::LlmClient::default();
+            let client = rust_rag_llm::ollama_client::LlmClient::from_config();
 
             TUI_RT.block_on(async {
-                let mut stream = client.complete_stream_chunks(&system_prompt, &full_message);
+                let mut stream = client.complete_stream_chunks(system_prompt, &full_message);
                 loop {
                     let chunk_result = futures_util::stream::StreamExt::next(&mut stream).await;
                     match chunk_result {
@@ -341,8 +342,7 @@ impl App {
                     .iter()
                     .skip(self.selected_result.saturating_sub(max_items))
                     .take(max_items)
-                    .enumerate()
-                    .map(|(_, r)| {
+                    .map(|r| {
                         let line = format!(
                             "[{:.2}] {}:{} - {}",
                             r.score,

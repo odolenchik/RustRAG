@@ -28,13 +28,12 @@ pub fn build_call_graph(
             chunk.module_name,
             chunk.symbol_kind_name()
         );
-        if !name_to_index.contains_key(&node_key) {
-            let idx = graph.add_node(Symbol {
+        name_to_index.entry(node_key).or_insert_with(|| {
+            graph.add_node(Symbol {
                 name: chunk.module_name.clone(),
                 file_path: chunk.file_path.to_string_lossy().to_string(),
-            });
-            name_to_index.insert(node_key, idx);
-        }
+            })
+        });
     }
 
     // Extract call edges using ra_ap_syntax AST analysis

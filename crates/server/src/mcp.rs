@@ -11,6 +11,7 @@ use std::io::{self, BufRead, Write as IoWrite};
 
 #[derive(Debug, Deserialize)]
 struct JsonRpcRequest {
+    #[allow(dead_code)] // deserialized but not used locally — MCP handles protocol versioning
     jsonrpc: String,
     method: String,
     #[serde(default)]
@@ -87,10 +88,12 @@ impl McpState {
 
 #[derive(Debug, Deserialize)]
 struct InitializeParams {
+    #[allow(dead_code)] // deserialized but not used — MCP protocol version is fixed
     #[serde(default)]
     protocol_version: String,
 }
 
+#[allow(dead_code)] // notification handler registered but MCP stdio transport doesn't always send it
 fn handle_notification_initialized(_params: Value) -> Result<()> {
     Ok(())
 }
@@ -250,7 +253,7 @@ fn rag_search_tool(args: &Value, state: &McpState) -> Result<Value> {
         .to_string();
     let top_k: usize = args["top_k"].as_u64().map(|n| n as usize).unwrap_or(5);
 
-    if top_k < 1 || top_k > 100 {
+    if !(1..=100).contains(&top_k) {
         return Err(anyhow::anyhow!("top_k must be between 1 and 100"));
     }
 
@@ -294,7 +297,7 @@ fn rag_query_tool(args: &Value, state: &McpState) -> Result<Value> {
     let system_prompt = "You are a Rust code analysis assistant. Answer questions based on the provided code snippets. Always cite file paths and line numbers when referencing code.";
     let user_message = format!("Question: {}\n\nRelevant code:\n{}", question, context);
 
-    let answer = rust_rag_llm::ollama_client::LlmClient::chat(&system_prompt, &user_message)?;
+    let answer = rust_rag_llm::ollama_client::LlmClient::chat(system_prompt, &user_message)?;
 
     let citations: Vec<Value> = results
         .iter()

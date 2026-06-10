@@ -108,7 +108,7 @@ pub fn index_workspace(path: &str) -> Result<()> {
     // Step 4: Parse AST for changed/new files and build chunks.
     let mut all_chunks: Vec<rust_rag_core::indexer::Chunk> = Vec::new();
 
-    for (file_path, _hash) in &files_to_reindex {
+    for file_path in files_to_reindex.keys() {
         let content = std::fs::read_to_string(file_path)?;
         // Parse only this file's AST nodes.
         rust_rag_core::indexer::parse_and_extract(&content, file_path, &mut all_chunks)?;
@@ -157,10 +157,8 @@ pub fn index_workspace(path: &str) -> Result<()> {
     // Persist cache.
     let _ = embed_cache.write_back(
         &texts,
-        &all_embeddings
-            .iter()
-            .filter_map(|e| Some(e.clone()))
-            .collect::<Vec<_>>(),
+        #[allow(clippy::iter_cloned_collect)] // need Cloned + collect for Vec<Vec<f32>> conversion
+        &all_embeddings.iter().cloned().collect::<Vec<_>>(),
         &mut 0,
     );
 
@@ -282,7 +280,7 @@ pub fn ask(query: &str, workspace_root: Option<&str>) -> Result<()> {
     let user_message = format!("Question: {}\n\nRelevant code:\n{}", query, context);
 
     print!("\nAsking LLM...\n\n");
-    let response = rust_rag_llm::ollama_client::LlmClient::chat(&system_prompt, &user_message)?;
+    let response = rust_rag_llm::ollama_client::LlmClient::chat(system_prompt, &user_message)?;
     println!("{}", response);
 
     Ok(())
@@ -296,7 +294,7 @@ pub async fn ask_stream(query: &str, workspace_root: Option<&str>) -> Result<()>
     let user_message = format!("Question: {}\n\nRelevant code:\n{}", query, context);
 
     print!("\nAsking LLM...\n\n");
-    let client = rust_rag_llm::ollama_client::LlmClient::default();
+    let client = rust_rag_llm::ollama_client::LlmClient::from_config();
     let mut stream = client.complete_stream_chunks(system_prompt, &user_message);
 
     while let Some(chunk) = stream.next().await {
@@ -340,7 +338,7 @@ pub fn ask_json(query: &str, workspace_root: Option<&str>) -> Result<()> {
         })
     }).collect();
 
-    let response = rust_rag_llm::ollama_client::LlmClient::chat(&system_prompt, &user_message)?;
+    let response = rust_rag_llm::ollama_client::LlmClient::chat(system_prompt, &user_message)?;
 
     let output = serde_json::json!({
         "query": query,
@@ -361,7 +359,7 @@ pub async fn ask_stream_json(query: &str, workspace_root: Option<&str>) -> Resul
     let user_message = format!("Question: {}\n\nRelevant code:\n{}", query, context);
 
     // Collect streamed response
-    let client = rust_rag_llm::ollama_client::LlmClient::default();
+    let client = rust_rag_llm::ollama_client::LlmClient::from_config();
     let mut stream = client.complete_stream_chunks(system_prompt, &user_message);
     let mut collected = String::new();
     while let Some(chunk) = stream.next().await {
@@ -586,7 +584,7 @@ pub fn search_symbol(query: &str, workspace_root: Option<&str>) -> Result<()> {
         a["file_path"]
             .as_str()
             .unwrap_or("")
-            .cmp(&b["file_path"].as_str().unwrap_or(""))
+            .cmp(b["file_path"].as_str().unwrap_or(""))
     });
 
     println!("Found {} result(s) for '{}':\n", matches.len(), query);
@@ -660,7 +658,7 @@ pub fn search_symbol_json(query: &str, workspace_root: Option<&str>) -> Result<(
         a["file_path"]
             .as_str()
             .unwrap_or("")
-            .cmp(&b["file_path"].as_str().unwrap_or(""))
+            .cmp(b["file_path"].as_str().unwrap_or(""))
     });
 
     let output = serde_json::json!({

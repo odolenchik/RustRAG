@@ -35,7 +35,15 @@ impl IndexState {
             chunk_ids: Vec::new(),
         }
     }
+}
 
+impl Default for IndexState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl IndexState {
     /// Load state from disk. Returns a default (empty) state if the file doesn't exist.
     pub fn load(state_path: &Path) -> Result<Self> {
         let path = state_path.join("index_state.json");
@@ -93,9 +101,9 @@ impl IndexState {
         }
 
         // Find removed files (in state but not in current)
-        for (_path, _meta) in &self.files {
-            if !current_files.contains_key(_path) {
-                let prefix = format!("{}{}", CHUNK_PREFIX, _path.display());
+        for path in self.files.keys() {
+            if !current_files.contains_key(path) {
+                let prefix = format!("{}{}", CHUNK_PREFIX, path.display());
                 removed_chunk_ids.extend(
                     self.chunk_ids
                         .iter()
@@ -122,7 +130,7 @@ impl IndexState {
             let cid = format!("{}{}_{}", CHUNK_PREFIX, path.display(), 0);
             all_chunk_ids.push(cid);
         }
-        for (path, _meta) in &self.files {
+        for path in self.files.keys() {
             if !files.contains_key(path) {
                 let prefix = format!("{}{}", CHUNK_PREFIX, path.display());
                 self.chunk_ids.retain(|id| !id.starts_with(&prefix));

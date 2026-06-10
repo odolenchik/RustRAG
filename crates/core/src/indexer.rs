@@ -71,7 +71,7 @@ impl SymbolKind {
 /// - Each file is read only once (not N times).
 /// - Byte→line mapping uses a precomputed prefix array of cumulative line lengths — O(1) lookup.
 #[allow(dead_code)] // called internally by index_workspace; pub(crate) for test access
-pub fn apply_overlap(chunks: &mut Vec<Chunk>) {
+pub fn apply_overlap(chunks: &mut [Chunk]) {
     let overlap = crate::config::Config::find()
         .ok()
         .map(|c| c.embedding.chunk_overlap)
@@ -84,9 +84,9 @@ pub fn apply_overlap(chunks: &mut Vec<Chunk>) {
     // Group indices by file path
     let mut file_indices: std::collections::HashMap<PathBuf, Vec<usize>> =
         std::collections::HashMap::new();
-    for idx in 0..chunks.len() {
+    for (idx, chunk) in chunks.iter().enumerate() {
         file_indices
-            .entry(chunks[idx].file_path.clone())
+            .entry(chunk.file_path.clone())
             .or_default()
             .push(idx);
     }
@@ -322,8 +322,8 @@ fn extract_nodes(
 
             chunks.push(Chunk {
                 file_path: file_path.to_path_buf(),
-                line_start: node.start_byte() as usize,
-                line_end: node.end_byte() as usize,
+                line_start: node.start_byte(),
+                line_end: node.end_byte(),
                 module_name: format!("{}/{}", module_prefix, name),
                 symbol_kind: SymbolKind::Function,
                 text: content[node.start_byte()..node.end_byte()].to_string(),
@@ -338,8 +338,8 @@ fn extract_nodes(
 
             chunks.push(Chunk {
                 file_path: file_path.to_path_buf(),
-                line_start: node.start_byte() as usize,
-                line_end: node.end_byte() as usize,
+                line_start: node.start_byte(),
+                line_end: node.end_byte(),
                 module_name: format!("{}/impl {}", module_prefix, self_ty),
                 symbol_kind: SymbolKind::ImplBlock,
                 text: content[node.start_byte()..node.end_byte()].to_string(),
@@ -348,8 +348,8 @@ fn extract_nodes(
         "unsafe_block" => {
             chunks.push(Chunk {
                 file_path: file_path.to_path_buf(),
-                line_start: node.start_byte() as usize,
-                line_end: node.end_byte() as usize,
+                line_start: node.start_byte(),
+                line_end: node.end_byte(),
                 module_name: format!("{}/unsafe", module_prefix),
                 symbol_kind: SymbolKind::UnsafeRegion,
                 text: content[node.start_byte()..node.end_byte()].to_string(),

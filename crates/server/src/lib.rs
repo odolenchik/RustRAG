@@ -155,7 +155,7 @@ async fn query_handler(
     // Call LLM using config-aware client (reads endpoint/model from .rustrag.toml).
     // Use spawn_blocking because LlmClient::chat() does block_on internally.
     let answer = tokio::task::spawn_blocking(move || {
-        rust_rag_llm::ollama_client::LlmClient::chat(&system_prompt, &user_message)
+        rust_rag_llm::ollama_client::LlmClient::chat(system_prompt, &user_message)
     })
     .await;
 
@@ -192,6 +192,7 @@ struct QueryBody {
 #[derive(Debug, Deserialize)]
 struct QueryStreamQuery {
     question: String,
+    #[allow(dead_code)] // used to be read from query params; now uses config default
     #[serde(default = "default_top_k")]
     top_k: usize,
 }
@@ -248,8 +249,8 @@ async fn query_stream_handler(
         // Spawn the LLM streaming task directly as async — no nested runtime needed.
         // The LlmClient methods already use .await internally via the ChatBackend trait.
         tokio::spawn(async move {
-            let client = rust_rag_llm::ollama_client::LlmClient::default();
-            let mut stream = client.complete_stream_chunks(&system_prompt, &user_message);
+            let client = rust_rag_llm::ollama_client::LlmClient::from_config();
+            let mut stream = client.complete_stream_chunks(system_prompt, &user_message);
             while let Some(chunk) = stream.next().await {
                 match chunk {
                     Ok(text) => {

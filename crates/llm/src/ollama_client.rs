@@ -24,13 +24,12 @@ impl SseChunk {
             Some(SseChunk {
                 content: content.to_string(),
             })
-        } else if let Some(text_val) = parsed["choices"][0]["text"].as_str() {
-            // llama.cpp may return text field directly
-            Some(SseChunk {
-                content: text_val.to_string(),
-            })
         } else {
-            None
+            parsed["choices"][0]["text"]
+                .as_str()
+                .map(|text_val| SseChunk {
+                    content: text_val.to_string(),
+                })
         }
     }
 }
@@ -134,8 +133,9 @@ impl LlmClient {
         }
     }
 
-    /// Default: uses config file (endpoint/model from .rustrag.toml), falls back to env var, then hardcoded defaults.
-    pub fn default() -> Self {
+    /// Create LlmClient using the configuration file (.rustrag.toml) or environment variables.
+    /// Falls back to hard-coded defaults if neither is available.
+    pub fn from_config() -> Self {
         let cfg = rust_rag_core::config::Config::find().ok();
 
         // Resolve endpoint with priority: config > LLAMA_ENDPOINT env > hard-coded default
@@ -181,7 +181,7 @@ impl LlmClient {
 
     /// Convenience synchronous wrapper — reads config from disk each time.
     pub fn chat(system_prompt: &str, user_message: &str) -> Result<String> {
-        let client = LlmClient::default();
+        let client = LlmClient::from_config();
         Self::sync_runtime().block_on(client.complete(system_prompt, user_message))
     }
 
