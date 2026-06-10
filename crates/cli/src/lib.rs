@@ -276,7 +276,7 @@ fn collect_rs_hashes(dir: &Path, files: &mut HashMap<std::path::PathBuf, String>
 pub fn ask(query: &str, workspace_root: Option<&str>) -> Result<()> {
     let (_results, context) = run_retrieval_pipeline(query, workspace_root)?;
 
-    let system_prompt = "You are a Rust code analysis assistant. Answer questions based on the provided code snippets. Always cite file paths and line numbers when referencing code.";
+    let system_prompt = rust_rag_core::constants::DEFAULT_SYSTEM_PROMPT;
     let user_message = format!("Question: {}\n\nRelevant code:\n{}", query, context);
 
     print!("\nAsking LLM...\n\n");
@@ -290,7 +290,7 @@ pub fn ask(query: &str, workspace_root: Option<&str>) -> Result<()> {
 pub async fn ask_stream(query: &str, workspace_root: Option<&str>) -> Result<()> {
     let (results, context) = run_retrieval_pipeline(query, workspace_root)?;
 
-    let system_prompt = "You are a Rust code analysis assistant. Answer questions based on the provided code snippets. Always cite file paths and line numbers when referencing code.";
+    let system_prompt = rust_rag_core::constants::DEFAULT_SYSTEM_PROMPT;
     let user_message = format!("Question: {}\n\nRelevant code:\n{}", query, context);
 
     print!("\nAsking LLM...\n\n");
@@ -318,7 +318,7 @@ pub async fn ask_stream(query: &str, workspace_root: Option<&str>) -> Result<()>
 pub fn ask_json(query: &str, workspace_root: Option<&str>) -> Result<()> {
     let (results, context) = run_retrieval_pipeline(query, workspace_root)?;
 
-    let system_prompt = "You are a Rust code analysis assistant. Answer questions based on the provided code snippets. Always cite file paths and line numbers when referencing code.";
+    let system_prompt = rust_rag_core::constants::DEFAULT_SYSTEM_PROMPT;
     let user_message = format!("Question: {}\n\nRelevant code:\n{}", query, context);
 
     // Suppress result headers in JSON mode — they go to stdout already from pipeline;
@@ -355,7 +355,7 @@ pub fn ask_json(query: &str, workspace_root: Option<&str>) -> Result<()> {
 pub async fn ask_stream_json(query: &str, workspace_root: Option<&str>) -> Result<()> {
     let (results, context) = run_retrieval_pipeline(query, workspace_root)?;
 
-    let system_prompt = "You are a Rust code analysis assistant. Answer questions based on the provided code snippets. Always cite file paths and line numbers when referencing code.";
+    let system_prompt = rust_rag_core::constants::DEFAULT_SYSTEM_PROMPT;
     let user_message = format!("Question: {}\n\nRelevant code:\n{}", query, context);
 
     // Collect streamed response

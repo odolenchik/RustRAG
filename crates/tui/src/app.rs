@@ -145,7 +145,7 @@ impl App {
         self.app_state = AppState::Results;
         self.llm_state = LlmState::Loading;
 
-        let system_prompt = "You are a Rust code analysis assistant. Answer questions based on the provided code snippets.";
+        let system_prompt = rust_rag_core::constants::DEFAULT_SYSTEM_PROMPT;
         let context: String = self
             .search_results
             .iter()

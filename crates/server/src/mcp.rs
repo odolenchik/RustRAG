@@ -294,7 +294,7 @@ fn rag_query_tool(args: &Value, state: &McpState) -> Result<Value> {
         .collect::<Vec<_>>()
         .join("\n\n");
 
-    let system_prompt = "You are a Rust code analysis assistant. Answer questions based on the provided code snippets. Always cite file paths and line numbers when referencing code.";
+    let system_prompt = rust_rag_core::constants::DEFAULT_SYSTEM_PROMPT;
     let user_message = format!("Question: {}\n\nRelevant code:\n{}", question, context);
 
     let answer = rust_rag_llm::ollama_client::LlmClient::chat(system_prompt, &user_message)?;

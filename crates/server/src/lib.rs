@@ -149,7 +149,7 @@ async fn query_handler(
         .collect::<Vec<_>>()
         .join("\n\n");
 
-    let system_prompt = "You are a Rust code analysis assistant. Answer questions based on the provided code snippets. Always cite file paths and line numbers when referencing code.";
+    let system_prompt = rust_rag_core::constants::DEFAULT_SYSTEM_PROMPT;
     let user_message = format!("Question: {}\n\nRelevant code:\n{}", body.question, context);
 
     // Call LLM using config-aware client (reads endpoint/model from .rustrag.toml).
@@ -235,7 +235,7 @@ async fn query_stream_handler(
         .collect::<Vec<_>>()
         .join("\n\n");
 
-    let system_prompt = "You are a Rust code analysis assistant. Answer questions based on the provided code snippets. Always cite file paths and line numbers when referencing code.";
+    let system_prompt = rust_rag_core::constants::DEFAULT_SYSTEM_PROMPT;
     let user_message = format!(
         "Question: {}\n\nRelevant code:\n{}",
         params.question, context
