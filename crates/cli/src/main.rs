@@ -108,6 +108,16 @@ struct DownloadArgs {
     path: Option<String>,
 }
 
+/// Resolve a workspace path argument to an absolute, canonicalized path.
+fn resolve_workspace_path(path_arg: Option<&str>) -> Result<Option<std::path::PathBuf>> {
+    match path_arg {
+        Some(p) => std::fs::canonicalize(p)
+            .map(Some)
+            .map_err(|e| anyhow::anyhow!("Invalid workspace path '{}': {}", p, e)),
+        None => Ok(None),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -115,8 +125,7 @@ async fn main() -> Result<()> {
     match cli.command {
         Command::Index(args) => {
             if args.force {
-                let workspace_root = std::path::PathBuf::from(&args.path);
-                let store_path = workspace_root.join(".rustrag");
+                let store_path = std::path::PathBuf::from(&args.path).join(".rustrag");
                 if store_path.exists() {
                     println!("Removing old index at {}", store_path.display());
                     std::fs::remove_dir_all(&store_path)?;
@@ -126,26 +135,37 @@ async fn main() -> Result<()> {
         }
         Command::Reindex(args) => rust_rag_cli::reindex_workspace(&args.path),
         Command::Info(args) => {
+            let path: Option<String> = resolve_workspace_path(args.path.as_deref())?
+                .map(|p| p.to_string_lossy().to_string());
             if args.json {
-                rust_rag_cli::show_info_json(args.path.as_deref())
+                rust_rag_cli::show_info_json(path.as_deref())
             } else {
-                rust_rag_cli::show_info(args.path.as_deref())
+                rust_rag_cli::show_info(path.as_deref())
             }
         }
-        Command::Clean(args) => rust_rag_cli::clean_workspace(args.path.as_deref()),
+        Command::Clean(args) => {
+            let path: Option<String> = resolve_workspace_path(args.path.as_deref())?
+                .map(|p| p.to_string_lossy().to_string());
+            rust_rag_cli::clean_workspace(path.as_deref())
+        }
         Command::Ask(args) => {
-            let workspace = args.path.as_deref();
+            let workspace: Option<String> = resolve_workspace_path(args.path.as_deref())?
+                .map(|p| p.to_string_lossy().to_string());
             if args.json && args.stream {
-                rust_rag_cli::ask_stream_json(&args.query, workspace).await
+                rust_rag_cli::ask_stream_json(&args.query, workspace.as_deref()).await
             } else if args.json {
-                rust_rag_cli::ask_json(&args.query, workspace)
+                rust_rag_cli::ask_json(&args.query, workspace.as_deref())
             } else if args.stream {
-                rust_rag_cli::ask_stream(&args.query, workspace).await
+                rust_rag_cli::ask_stream(&args.query, workspace.as_deref()).await
             } else {
-                rust_rag_cli::ask(&args.query, workspace)
+                rust_rag_cli::ask(&args.query, workspace.as_deref())
             }
         }
-        Command::Chat(args) => return rust_rag_tui::run(args.path.as_deref()),
+        Command::Chat(args) => {
+            let path: Option<String> = resolve_workspace_path(args.path.as_deref())?
+                .map(|p| p.to_string_lossy().to_string());
+            return rust_rag_tui::run(path.as_deref());
+        }
         Command::Download(args) => {
             let target = if let Some(path) = args.path {
                 path
@@ -161,10 +181,12 @@ async fn main() -> Result<()> {
             rust_rag_cli::download_model(&target)
         }
         Command::Symbol(args) => {
+            let workspace: Option<String> = resolve_workspace_path(args.path.as_deref())?
+                .map(|p| p.to_string_lossy().to_string());
             if args.json {
-                rust_rag_cli::search_symbol_json(&args.query, args.path.as_deref())
+                rust_rag_cli::search_symbol_json(&args.query, workspace.as_deref())
             } else {
-                rust_rag_cli::search_symbol(&args.query, args.path.as_deref())
+                rust_rag_cli::search_symbol(&args.query, workspace.as_deref())
             }
         }
     }

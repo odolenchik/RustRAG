@@ -13,25 +13,29 @@ use futures_util::StreamExt;
 use rust_rag_core::{config, vector_store::VectorStore};
 use rust_rag_llm::ChatBackend;
 use serde::Deserialize;
-use std::path::Path;
+use std::{path::Path, sync::Arc};
+use tokio::sync::Semaphore;
 use tower_http::cors::CorsLayer;
 
 /// Request state shared across handlers.
 pub struct AppState {
     pub store: std::sync::Arc<VectorStore>,
+    /// Rate limiter: permits per minute for non-stream endpoints.
+    pub rate_limiter: Arc<Semaphore>,
 }
 
 impl Clone for AppState {
     fn clone(&self) -> Self {
         Self {
             store: std::sync::Arc::clone(&self.store),
+            rate_limiter: Arc::clone(&self.rate_limiter),
         }
     }
 }
 
 impl AppState {
     /// Create app state from a workspace root that has an index.
-    pub fn from_workspace(workspace_root: &Path) -> Result<Self> {
+    pub fn from_workspace(workspace_root: &Path, rate_limit_per_min: u32) -> Result<Self> {
         let store_path = workspace_root.join(".rustrag");
         if !store_path.exists() {
             anyhow::bail!(
@@ -42,14 +46,16 @@ impl AppState {
         let store = VectorStore::open(&store_path)?;
         Ok(Self {
             store: std::sync::Arc::new(store),
+            rate_limiter: Arc::new(Semaphore::new(rate_limit_per_min as usize)),
         })
     }
 
     /// Create app state from a custom path.
-    pub fn from_path(path: &Path) -> Result<Self> {
+    pub fn from_path(path: &Path, rate_limit_per_min: u32) -> Result<Self> {
         let store = VectorStore::open(path)?;
         Ok(Self {
             store: std::sync::Arc::new(store),
+            rate_limiter: Arc::new(Semaphore::new(rate_limit_per_min as usize)),
         })
     }
 }
@@ -101,6 +107,9 @@ async fn search_handler(
     state: axum::extract::State<AppState>,
     Query(params): Query<SearchQuery>,
 ) -> Result<JsonResponse<serde_json::Value>, StatusCode> {
+    if state.rate_limiter.clone().try_acquire_owned().is_err() {
+        return Err(StatusCode::TOO_MANY_REQUESTS);
+    }
     let query_embedding = match rust_rag_core::embedding::embed(&params.query) {
         Ok(v) => v,
         Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
@@ -123,6 +132,9 @@ async fn query_handler(
     state: axum::extract::State<AppState>,
     Json(body): Json<QueryBody>,
 ) -> Result<JsonResponse<serde_json::Value>, StatusCode> {
+    if state.rate_limiter.clone().try_acquire_owned().is_err() {
+        return Err(StatusCode::TOO_MANY_REQUESTS);
+    }
     let config = config::Config::find().unwrap_or_default();
     let top_k = config.llm_config().top_k;
 

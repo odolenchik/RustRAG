@@ -50,7 +50,7 @@ pub struct VectorStore {
 
 impl VectorStore {
     /// Open or create a vector store at the given directory.
-   pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self> {
+    pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self> {
         let path = path.as_ref();
         std::fs::create_dir_all(path)?;
         Ok(VectorStore {

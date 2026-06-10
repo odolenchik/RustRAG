@@ -18,8 +18,13 @@ enum Command {
 
 #[derive(clap::Args)]
 struct ServeArgs {
+    /// Port to listen on
     #[arg(short, long, default_value_t = 8090u16)]
     port: u16,
+
+    /// Max requests per minute for rate limiting (default: 60)
+    #[arg(long, default_value_t = 60)]
+    rate_limit: u32,
 }
 
 #[derive(clap::Args)]
@@ -33,20 +38,24 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Serve(args) => run_server(args.port).await,
+        Command::Serve(args) => run_server(args.port, args.rate_limit).await,
         Command::Mcp(args) => run_mcp(args.path.as_deref()).await,
     }
 }
 
-async fn run_server(port: u16) -> Result<()> {
+async fn run_server(port: u16, rate_limit: u32) -> Result<()> {
     let workspace_root = std::env::var("RUSRAG_WORKSPACE")
         .map(std::path::PathBuf::from)
         .unwrap_or(std::env::current_dir().expect("no CWD"));
 
     println!("Starting RustRAG server on port {}", port);
-    println!("Workspace: {}", workspace_root.display());
+    println!(
+        "Workspace: {} | Rate limit: {} req/min",
+        workspace_root.display(),
+        rate_limit
+    );
 
-    let state = AppState::from_workspace(&workspace_root)?;
+    let state = AppState::from_workspace(&workspace_root, rate_limit)?;
     let app = build_router(state);
 
     let addr = format!("127.0.0.1:{port}");
