@@ -29,7 +29,9 @@ pub struct LlmConfig {
     pub top_k: usize,
 }
 
-fn default_top_k() -> usize { 5 }
+fn default_top_k() -> usize {
+    5
+}
 
 impl Config {
     /// Load config from `.rustrag.toml` in the given directory (workspace root).

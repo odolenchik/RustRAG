@@ -13,13 +13,21 @@ pub struct Symbol {
 /// Build a call graph from indexed chunks using ra_ap_syntax AST analysis.
 /// For each function/impl chunk, parses its text with ra_ap_syntax and extracts
 /// CallExpr nodes to find which functions are called within.
-pub fn build_call_graph(chunks: &[crate::indexer::Chunk]) -> Result<(Graph<Symbol, f32>, HashMap<String, NodeIndex>)> {
+pub fn build_call_graph(
+    chunks: &[crate::indexer::Chunk],
+) -> Result<(Graph<Symbol, f32>, HashMap<String, NodeIndex>)> {
     let mut graph = Graph::<Symbol, f32>::new();
     let mut name_to_index: HashMap<String, NodeIndex> = HashMap::new();
 
     // Add all symbols as nodes
     for chunk in chunks {
-        let node_key = format!("{}:{}:{}:{}", file_stem(&chunk.file_path), chunk.line_start, chunk.module_name, chunk.symbol_kind_name());
+        let node_key = format!(
+            "{}:{}:{}:{}",
+            file_stem(&chunk.file_path),
+            chunk.line_start,
+            chunk.module_name,
+            chunk.symbol_kind_name()
+        );
         if !name_to_index.contains_key(&node_key) {
             let idx = graph.add_node(Symbol {
                 name: chunk.module_name.clone(),
@@ -52,11 +60,20 @@ fn extract_call_edges(chunks: &[crate::indexer::Chunk]) -> Result<HashMap<String
 
     for chunk in chunks {
         // Only analyze function bodies and impl blocks
-        if !matches!(chunk.symbol_kind, crate::indexer::SymbolKind::Function | crate::indexer::SymbolKind::ImplBlock) {
+        if !matches!(
+            chunk.symbol_kind,
+            crate::indexer::SymbolKind::Function | crate::indexer::SymbolKind::ImplBlock
+        ) {
             continue;
         }
 
-        let key = format!("{}:{}:{}:{}", file_stem(&chunk.file_path), chunk.line_start, chunk.module_name, chunk.symbol_kind_name());
+        let key = format!(
+            "{}:{}:{}:{}",
+            file_stem(&chunk.file_path),
+            chunk.line_start,
+            chunk.module_name,
+            chunk.symbol_kind_name()
+        );
 
         // Parse the chunk text with ra_ap_syntax and extract call names
         let call_names = parse_call_exprs(&chunk.text);
@@ -96,7 +113,10 @@ fn parse_call_exprs(text: &str) -> Vec<String> {
 /// Check if a call expression name is trivial (not a real function call).
 fn is_trivial_call(name: &str) -> bool {
     let name = name.trim();
-    matches!(name, "true" | "false" | "self" | "Self" | "super" | "_" | "")
+    matches!(
+        name,
+        "true" | "false" | "self" | "Self" | "super" | "_" | ""
+    )
 }
 
 fn file_stem(path: &std::path::Path) -> String {

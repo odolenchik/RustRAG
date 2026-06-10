@@ -66,7 +66,9 @@ impl IndexState {
         let mut buf = [0u8; 8192];
         loop {
             let bytes_read = buf_reader.read(&mut buf)?;
-            if bytes_read == 0 { break; }
+            if bytes_read == 0 {
+                break;
+            }
             hasher.update(&buf[..bytes_read]);
         }
         Ok(format!("{:x}", hasher.finalize()))
@@ -85,8 +87,8 @@ impl IndexState {
         for (path, current_hash) in current_files {
             match self.files.get::<PathBuf>(path) {
                 Some(saved) if saved.sha256 == *current_hash => {} // unchanged
-                Some(_saved) => changed_files.push(path.clone()),   // hash changed
-                None => new_files.push(path.clone()),               // new file
+                Some(_saved) => changed_files.push(path.clone()),  // hash changed
+                None => new_files.push(path.clone()),              // new file
             }
         }
 
@@ -94,9 +96,12 @@ impl IndexState {
         for (_path, _meta) in &self.files {
             if !current_files.contains_key(_path) {
                 let prefix = format!("{}{}", CHUNK_PREFIX, _path.display());
-                removed_chunk_ids.extend(self.chunk_ids.iter().filter(|id| {
-                    id.starts_with(&prefix)
-                }).cloned());
+                removed_chunk_ids.extend(
+                    self.chunk_ids
+                        .iter()
+                        .filter(|id| id.starts_with(&prefix))
+                        .cloned(),
+                );
             }
         }
 
@@ -107,7 +112,12 @@ impl IndexState {
     pub fn update_files(&mut self, files: HashMap<PathBuf, String>) {
         let mut all_chunk_ids = Vec::new();
         for (path, hash) in &files {
-            self.files.insert(path.clone(), FileMetadata { sha256: hash.clone() });
+            self.files.insert(
+                path.clone(),
+                FileMetadata {
+                    sha256: hash.clone(),
+                },
+            );
             // Collect chunk IDs that would be created from this file (line_start = 0 placeholder)
             let cid = format!("{}{}_{}", CHUNK_PREFIX, path.display(), 0);
             all_chunk_ids.push(cid);

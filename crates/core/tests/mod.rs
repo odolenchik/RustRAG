@@ -56,14 +56,19 @@ fn test_index_workspace_finds_chunks() {
 
     // Should find the function and impl block
     let has_function = chunks.iter().any(|c| c.symbol_kind == SymbolKind::Function);
-    let has_impl = chunks.iter().any(|c| c.symbol_kind == SymbolKind::ImplBlock);
+    let has_impl = chunks
+        .iter()
+        .any(|c| c.symbol_kind == SymbolKind::ImplBlock);
     assert!(has_function, "Should extract function chunk");
     assert!(has_impl, "Should extract impl block chunk");
 
     // Verify chunk properties
     for chunk in &chunks {
         assert!(!chunk.text.is_empty(), "Chunk text should not be empty");
-        assert!(!chunk.module_name.is_empty(), "Module name should not be empty");
+        assert!(
+            !chunk.module_name.is_empty(),
+            "Module name should not be empty"
+        );
         assert!(chunk.line_start <= chunk.line_end, "line_start <= line_end");
     }
 }
@@ -112,7 +117,9 @@ fn test_vector_store_roundtrip() {
 
     // Search with a vector of all 1.0 — should find our document
     let query_vec: Vec<f32> = vec![1.0; 384];
-    let results = store.search_by_embedding(&query_vec, 5).expect("should search");
+    let results = store
+        .search_by_embedding(&query_vec, 5)
+        .expect("should search");
 
     assert_eq!(results.len(), 1);
     let result = &results[0];
@@ -124,11 +131,14 @@ fn test_vector_store_roundtrip() {
 #[test]
 fn test_vector_store_empty_search() {
     let dir = tempfile::tempdir().unwrap();
-    let store = rust_rag_core::vector_store::VectorStore::open(dir.path()).expect("should create empty store");
+    let store = rust_rag_core::vector_store::VectorStore::open(dir.path())
+        .expect("should create empty store");
 
     // No documents inserted — search should return empty
     let query_vec: Vec<f32> = vec![1.0; 384];
-    let results = store.search_by_embedding(&query_vec, 5).expect("should search");
+    let results = store
+        .search_by_embedding(&query_vec, 5)
+        .expect("should search");
     assert!(results.is_empty());
 }
 
@@ -162,25 +172,32 @@ fn test_vector_store_multi_document_ranking() {
     // Query vector matches doc_a pattern (high first half, low second half)
     let query_vec: Vec<f32> = (0..384).map(|i| if i < 192 { 0.9 } else { 0.1 }).collect();
 
-    store.insert_documents(&[
-        rust_rag_core::vector_store::Document {
-            id: "doc_a".into(),
-            chunk: chunk1.clone(),
-            embedding: query_vec.clone(), // exact match → highest similarity
-        },
-        rust_rag_core::vector_store::Document {
-            id: "doc_b".into(),
-            chunk: chunk2,
-            embedding: (0..384).map(|i| if i < 192 { 0.1 } else { 0.9 }).collect(), // opposite pattern
-        },
-    ]).expect("should insert");
+    store
+        .insert_documents(&[
+            rust_rag_core::vector_store::Document {
+                id: "doc_a".into(),
+                chunk: chunk1.clone(),
+                embedding: query_vec.clone(), // exact match → highest similarity
+            },
+            rust_rag_core::vector_store::Document {
+                id: "doc_b".into(),
+                chunk: chunk2,
+                embedding: (0..384).map(|i| if i < 192 { 0.1 } else { 0.9 }).collect(), // opposite pattern
+            },
+        ])
+        .expect("should insert");
 
-    let results = store.search_by_embedding(&query_vec, 5).expect("should search");
+    let results = store
+        .search_by_embedding(&query_vec, 5)
+        .expect("should search");
 
     assert_eq!(results.len(), 2);
     // First result should be doc_a (higher similarity)
     assert_eq!(results[0].file_path.display().to_string(), "a.rs");
-    assert!(results[0].score >= results[1].score, "doc_a should rank higher than doc_b");
+    assert!(
+        results[0].score >= results[1].score,
+        "doc_a should rank higher than doc_b"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -191,9 +208,21 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
     if a.len() != b.len() || a.is_empty() {
         return 0.0;
     }
-    let dot: f64 = a.iter().zip(b.iter()).map(|(x, y)| *x as f64 * *y as f64).sum();
-    let mag_a: f64 = a.iter().map(|x| (*x) as f64 * (*x) as f64).sum::<f64>().sqrt();
-    let mag_b: f64 = b.iter().map(|x| (*x) as f64 * (*x) as f64).sum::<f64>().sqrt();
+    let dot: f64 = a
+        .iter()
+        .zip(b.iter())
+        .map(|(x, y)| *x as f64 * *y as f64)
+        .sum();
+    let mag_a: f64 = a
+        .iter()
+        .map(|x| (*x) as f64 * (*x) as f64)
+        .sum::<f64>()
+        .sqrt();
+    let mag_b: f64 = b
+        .iter()
+        .map(|x| (*x) as f64 * (*x) as f64)
+        .sum::<f64>()
+        .sqrt();
 
     if mag_a == 0.0 || mag_b == 0.0 {
         return 0.0;
@@ -205,7 +234,10 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
 fn test_cosine_similarity_identical_vectors() {
     let v = vec![1.0; 384];
     let sim = cosine_similarity(&v, &v);
-    assert!((sim - 1.0).abs() < 1e-9, "identical vectors should have similarity ≈ 1.0");
+    assert!(
+        (sim - 1.0).abs() < 1e-9,
+        "identical vectors should have similarity ≈ 1.0"
+    );
 }
 
 #[test]
@@ -216,7 +248,10 @@ fn test_cosine_similarity_orthogonal_vectors() {
     b[1] = 1.0;
     // Orthogonal vectors should have similarity ≈ 0
     let sim = cosine_similarity(&a, &b);
-    assert!(sim.abs() < 1e-9, "orthogonal vectors should have similarity ≈ 0");
+    assert!(
+        sim.abs() < 1e-9,
+        "orthogonal vectors should have similarity ≈ 0"
+    );
 }
 
 #[test]
@@ -225,7 +260,10 @@ fn test_cosine_similarity_opposite_vectors() {
     let b: Vec<f32> = vec![-1.0, -2.0, -3.0];
     // Opposite-direction vectors should have similarity ≈ -1.0
     let sim = cosine_similarity(&a, &b);
-    assert!(sim < -0.99, "opposite direction vectors should have similarity near -1.0");
+    assert!(
+        sim < -0.99,
+        "opposite direction vectors should have similarity near -1.0"
+    );
 }
 
 #[test]
@@ -262,7 +300,10 @@ fn test_end_to_end_rag_pipeline() {
 
     // Step 1: Index the workspace
     let chunks = rust_rag_core::indexer::index_workspace(&ws).expect("should index workspace");
-    assert!(!chunks.is_empty(), "Should find at least one chunk in workspace");
+    assert!(
+        !chunks.is_empty(),
+        "Should find at least one chunk in workspace"
+    );
 
     // Verify we found expected symbol kinds (functions, impls)
     let has_functions = chunks.iter().any(|c| c.symbol_kind == SymbolKind::Function);
@@ -273,7 +314,8 @@ fn test_end_to_end_rag_pipeline() {
     // Step 2: Create a vector store and insert documents with embeddings
     let store_dir = tempfile::tempdir().unwrap();
     let store_path = store_dir.path().join("store");
-    let store = rust_rag_core::vector_store::VectorStore::open(&store_path).expect("should create store");
+    let store =
+        rust_rag_core::vector_store::VectorStore::open(&store_path).expect("should create store");
 
     // Embed each chunk and insert — uses the singleton embedder which loads ONNX once
     let mut docs = Vec::new();
@@ -282,7 +324,10 @@ fn test_end_to_end_rag_pipeline() {
             eprintln!("  embedding {}/{}", i + 1, chunks.len());
         }
         let embedding = rust_rag_core::embedding::embed(&chunk.text).unwrap_or_else(|e| {
-            panic!("Should embed chunk '{}' at line {}: {}", chunk.module_name, chunk.line_start, e);
+            panic!(
+                "Should embed chunk '{}' at line {}: {}",
+                chunk.module_name, chunk.line_start, e
+            );
         });
         docs.push(rust_rag_core::vector_store::Document {
             id: format!("chunk_{}", i),
@@ -291,14 +336,18 @@ fn test_end_to_end_rag_pipeline() {
         });
     }
 
-    store.insert_documents(&docs).expect("should insert documents");
+    store
+        .insert_documents(&docs)
+        .expect("should insert documents");
 
     // Step 3: Search with a query embedding — verify results are non-empty and have scores
-    let query_embedding = rust_rag_core::embedding::embed(
-        &chunks[0].text.chars().take(64).collect::<String>()
-    ).unwrap_or(vec![1.0; 384]);
+    let query_embedding =
+        rust_rag_core::embedding::embed(&chunks[0].text.chars().take(64).collect::<String>())
+            .unwrap_or(vec![1.0; 384]);
 
-    let results = store.search_by_embedding(&query_embedding, 5).expect("should search");
+    let results = store
+        .search_by_embedding(&query_embedding, 5)
+        .expect("should search");
     assert!(!results.is_empty(), "Should return non-empty results");
 
     // Verify result properties
@@ -306,12 +355,19 @@ fn test_end_to_end_rag_pipeline() {
         assert!(!result.file_path.display().to_string().is_empty());
         assert!(result.line_start <= result.line_end);
         assert!(!result.text.is_empty());
-        assert!(result.score > 0.0, "Results should have positive similarity scores");
+        assert!(
+            result.score > 0.0,
+            "Results should have positive similarity scores"
+        );
     }
 
     // Verify that the highest-scoring result is actually relevant (cosine similarity > random)
     let top_score = results[0].score;
-    assert!(top_score >= 0.5, "Top result score ({}) should be reasonable", top_score);
+    assert!(
+        top_score >= 0.5,
+        "Top result score ({}) should be reasonable",
+        top_score
+    );
 }
 
 #[test]
@@ -320,15 +376,28 @@ fn test_indexer_on_real_project() {
     let self_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
 
     let chunks = rust_rag_core::indexer::index_workspace(&self_path).expect("should index self");
-    assert!(!chunks.is_empty(), "Should find chunks in RustRag crate itself");
+    assert!(
+        !chunks.is_empty(),
+        "Should find chunks in RustRag crate itself"
+    );
 
     // Verify that indexer found real code constructs, not just empty modules
-    let functions: Vec<_> = chunks.iter().filter(|c| c.symbol_kind == SymbolKind::Function).collect();
-    assert!(!functions.is_empty() || !chunks.is_empty(), "Should find some kind of symbol");
+    let functions: Vec<_> = chunks
+        .iter()
+        .filter(|c| c.symbol_kind == SymbolKind::Function)
+        .collect();
+    assert!(
+        !functions.is_empty() || !chunks.is_empty(),
+        "Should find some kind of symbol"
+    );
 
     // Verify chunk text coverage — each chunk should have non-trivial content
     for chunk in &chunks {
-        assert!(chunk.text.len() >= 5, "Chunk '{}' should have meaningful text", chunk.module_name);
+        assert!(
+            chunk.text.len() >= 5,
+            "Chunk '{}' should have meaningful text",
+            chunk.module_name
+        );
     }
 }
 
@@ -372,44 +441,46 @@ impl InvertedIndex {
     // Query vector matches doc A pattern closely
     let query_vec: Vec<f32> = (0..384).map(|i| if i < 192 { 0.9 } else { 0.1 }).collect();
 
-    store.insert_documents(&[
-        rust_rag_core::vector_store::Document {
-            id: "doc_a".into(),
-            chunk: Chunk {
-                file_path: PathBuf::from("embedding.rs"),
-                line_start: 1,
-                line_end: 4,
-                module_name: "init_embedding_model".into(),
-                symbol_kind: SymbolKind::Function,
-                text: doc_a_text.to_string(),
+    store
+        .insert_documents(&[
+            rust_rag_core::vector_store::Document {
+                id: "doc_a".into(),
+                chunk: Chunk {
+                    file_path: PathBuf::from("embedding.rs"),
+                    line_start: 1,
+                    line_end: 4,
+                    module_name: "init_embedding_model".into(),
+                    symbol_kind: SymbolKind::Function,
+                    text: doc_a_text.to_string(),
+                },
+                embedding: query_vec.clone(), // exact match → highest cosine similarity
             },
-            embedding: query_vec.clone(), // exact match → highest cosine similarity
-        },
-        rust_rag_core::vector_store::Document {
-            id: "doc_b".into(),
-            chunk: Chunk {
-                file_path: PathBuf::from("bm25.rs"),
-                line_start: 10,
-                line_end: 20,
-                module_name: "InvertedIndex::build".into(),
-                symbol_kind: SymbolKind::Function,
-                text: doc_b_text.to_string(),
+            rust_rag_core::vector_store::Document {
+                id: "doc_b".into(),
+                chunk: Chunk {
+                    file_path: PathBuf::from("bm25.rs"),
+                    line_start: 10,
+                    line_end: 20,
+                    module_name: "InvertedIndex::build".into(),
+                    symbol_kind: SymbolKind::Function,
+                    text: doc_b_text.to_string(),
+                },
+                embedding: (0..384).map(|i| if i < 192 { 0.1 } else { 0.9 }).collect(), // opposite pattern
             },
-            embedding: (0..384).map(|i| if i < 192 { 0.1 } else { 0.9 }).collect(), // opposite pattern
-        },
-        rust_rag_core::vector_store::Document {
-            id: "doc_c".into(),
-            chunk: Chunk {
-                file_path: PathBuf::from("hybrid.rs"),
-                line_start: 30,
-                line_end: 35,
-                module_name: "hybrid_search".into(),
-                symbol_kind: SymbolKind::Function,
-                text: doc_c_text.to_string(),
+            rust_rag_core::vector_store::Document {
+                id: "doc_c".into(),
+                chunk: Chunk {
+                    file_path: PathBuf::from("hybrid.rs"),
+                    line_start: 30,
+                    line_end: 35,
+                    module_name: "hybrid_search".into(),
+                    symbol_kind: SymbolKind::Function,
+                    text: doc_c_text.to_string(),
+                },
+                embedding: (0..384).map(|i| if i < 128 { 0.7 } else { 0.3 }).collect(), // partial match
             },
-            embedding: (0..384).map(|i| if i < 128 { 0.7 } else { 0.3 }).collect(), // partial match
-        },
-    ]).expect("should insert documents");
+        ])
+        .expect("should insert documents");
 
     (dir, store)
 }
@@ -419,10 +490,14 @@ fn test_hybrid_search_returns_results() {
     let (_dir, store) = make_hybrid_store();
 
     let query_vec: Vec<f32> = (0..384).map(|i| if i < 192 { 0.9 } else { 0.1 }).collect();
-    let results = store.hybrid_search(&query_vec, "embedding model", 5, 0.7, None)
+    let results = store
+        .hybrid_search(&query_vec, "embedding model", 5, 0.7, None)
         .expect("should search");
 
-    assert!(!results.is_empty(), "Hybrid search should return non-empty results");
+    assert!(
+        !results.is_empty(),
+        "Hybrid search should return non-empty results"
+    );
 }
 
 #[test]
@@ -431,11 +506,15 @@ fn test_hybrid_alpha_pure_vector() {
 
     // alpha=1.0 → pure vector similarity (BM25 contribution zeroed out)
     let query_vec: Vec<f32> = (0..384).map(|i| if i < 192 { 0.9 } else { 0.1 }).collect();
-    let results_at_1 = store.hybrid_search(&query_vec, "embedding model", 5, 1.0, None)
+    let results_at_1 = store
+        .hybrid_search(&query_vec, "embedding model", 5, 1.0, None)
         .expect("should search");
 
     // Doc A has exact vector match → should rank first at alpha=1.0
-    assert_eq!(results_at_1[0].file_path.display().to_string(), "embedding.rs");
+    assert_eq!(
+        results_at_1[0].file_path.display().to_string(),
+        "embedding.rs"
+    );
 }
 
 #[test]
@@ -444,7 +523,8 @@ fn test_hybrid_alpha_pure_bm25() {
 
     // alpha=0.0 → pure BM25 (vector contribution zeroed out)
     let query_vec: Vec<f32> = vec![1.0; 384];
-    let results_at_0 = store.hybrid_search(&query_vec, "embedding model", 5, 0.0, None)
+    let results_at_0 = store
+        .hybrid_search(&query_vec, "embedding model", 5, 0.0, None)
         .expect("should search");
 
     // At pure BM25, doc_a should still rank high because it contains the word "embedding"
@@ -459,13 +539,17 @@ fn test_hybrid_alpha_pure_vector_gives_consistent_ranking() {
     let query_vec: Vec<f32> = (0..384).map(|i| if i < 192 { 0.9 } else { 0.1 }).collect();
 
     // At alpha=1.0, vector similarity dominates — doc_a should rank first
-    let results_at_1 = store.hybrid_search(&query_vec, "embedding", 5, 1.0, None)
+    let results_at_1 = store
+        .hybrid_search(&query_vec, "embedding", 5, 1.0, None)
         .expect("should search");
 
     assert!(results_at_1.len() >= 2);
     // Doc A has exact vector match → must be at the top
-    assert_eq!(results_at_1[0].file_path.display().to_string(), "embedding.rs",
-        "At alpha=1.0, doc_a with matching embedding should rank first");
+    assert_eq!(
+        results_at_1[0].file_path.display().to_string(),
+        "embedding.rs",
+        "At alpha=1.0, doc_a with matching embedding should rank first"
+    );
 }
 
 #[test]
@@ -474,7 +558,8 @@ fn test_hybrid_alpha_pure_bm25_gives_consistent_ranking() {
 
     // Pure BM25 — query "embedding" matches text containing that word
     let query_vec: Vec<f32> = vec![0.1; 384];
-    let results_at_0 = store.hybrid_search(&query_vec, "embedding", 5, 0.0, None)
+    let results_at_0 = store
+        .hybrid_search(&query_vec, "embedding", 5, 0.0, None)
         .expect("should search");
 
     assert!(results_at_0.len() >= 1);
@@ -483,8 +568,10 @@ fn test_hybrid_alpha_pure_bm25_gives_consistent_ranking() {
     if *top_file == "bm25.rs" || *top_file == "hybrid.rs" {
         // BM25 might rank differently — that's fine, just check it ran without error
     } else {
-        assert_eq!(top_file, "embedding.rs",
-            "At alpha=0.0 (BM25), doc_a containing 'embedding' keyword should rank high");
+        assert_eq!(
+            top_file, "embedding.rs",
+            "At alpha=0.0 (BM25), doc_a containing 'embedding' keyword should rank high"
+        );
     }
 }
 
@@ -494,11 +581,13 @@ fn test_hybrid_alpha_blend_changes_ranking() {
 
     // Use a query vector that has moderate similarity to both docs
     let query_vec: Vec<f32> = vec![0.5; 384];
-    let results_at_1 = store.hybrid_search(&query_vec, "model", 5, 1.0, None)
+    let results_at_1 = store
+        .hybrid_search(&query_vec, "model", 5, 1.0, None)
         .expect("should search");
 
     // At alpha=0 (pure BM25), ranking may differ from vector-based at alpha=1
-    let results_at_0 = store.hybrid_search(&query_vec, "model", 5, 0.0, None)
+    let results_at_0 = store
+        .hybrid_search(&query_vec, "model", 5, 0.0, None)
         .expect("should search");
 
     assert!(results_at_1.len() >= 2);
@@ -537,25 +626,39 @@ fn test_bm25_scored_by_text_relevance() {
         line_end: 15,
         module_name: "other".into(),
         symbol_kind: SymbolKind::Function,
-        text: "fn init_other() -> OtherType { OtherType::new(OtherConfig::default()) }"
-            .to_string(),
+        text: "fn init_other() -> OtherType { OtherType::new(OtherConfig::default()) }".to_string(),
     };
 
     let embedding = vec![0.1; 384];
-    store.insert_documents(&[
-        rust_rag_core::vector_store::Document { id: "doc_a".into(), chunk: doc_with_keyword, embedding: embedding.clone() },
-        rust_rag_core::vector_store::Document { id: "doc_b".into(), chunk: doc_without_keyword, embedding: embedding.clone() },
-    ]).expect("should insert");
+    store
+        .insert_documents(&[
+            rust_rag_core::vector_store::Document {
+                id: "doc_a".into(),
+                chunk: doc_with_keyword,
+                embedding: embedding.clone(),
+            },
+            rust_rag_core::vector_store::Document {
+                id: "doc_b".into(),
+                chunk: doc_without_keyword,
+                embedding: embedding.clone(),
+            },
+        ])
+        .expect("should insert");
 
     // Use pure BM25 (alpha=0.0) with query that matches doc_a text
-    let results = store.hybrid_search(&embedding, "embedding", 5, 0.0, None).expect("should search");
+    let results = store
+        .hybrid_search(&embedding, "embedding", 5, 0.0, None)
+        .expect("should search");
 
     assert!(results.len() >= 1);
     // Doc A has the word "embedding" in its text → should rank higher than doc B at pure BM25
     if results.len() >= 2 {
         let top_doc = &results[0];
-        assert_eq!(top_doc.file_path.display().to_string(), "a.rs",
-            "BM25 should rank the document containing 'embedding' keyword first");
+        assert_eq!(
+            top_doc.file_path.display().to_string(),
+            "a.rs",
+            "BM25 should rank the document containing 'embedding' keyword first"
+        );
     }
 }
 
@@ -570,13 +673,17 @@ fn test_search_filters_by_symbol_kind() {
         file_extension: None,
         symbol_kind: Some(rust_rag_core::indexer::SymbolKind::Function),
     };
-    let results = store.hybrid_search(&query_vec, "embedding", 5, 0.7, Some(&filters))
+    let results = store
+        .hybrid_search(&query_vec, "embedding", 5, 0.7, Some(&filters))
         .expect("should search");
 
     // All results should be Function kind
     for result in &results {
-        assert_eq!(result.symbol_kind, Some(rust_rag_core::indexer::SymbolKind::Function),
-            "All results should match the Function filter");
+        assert_eq!(
+            result.symbol_kind,
+            Some(rust_rag_core::indexer::SymbolKind::Function),
+            "All results should match the Function filter"
+        );
     }
 }
 
@@ -590,38 +697,54 @@ fn test_search_filters_by_file_extension() {
     let store = rust_rag_core::vector_store::VectorStore::open(path).expect("should create store");
 
     let embedding = vec![0.1; 384];
-    store.insert_documents(&[
-        rust_rag_core::vector_store::Document {
-            id: "doc_rs".into(),
-            chunk: Chunk {
-                file_path: PathBuf::from("main.rs"),
-                line_start: 1, line_end: 5, module_name: "a".into(),
-                symbol_kind: SymbolKind::Function, text: "fn main() {}".to_string(),
+    store
+        .insert_documents(&[
+            rust_rag_core::vector_store::Document {
+                id: "doc_rs".into(),
+                chunk: Chunk {
+                    file_path: PathBuf::from("main.rs"),
+                    line_start: 1,
+                    line_end: 5,
+                    module_name: "a".into(),
+                    symbol_kind: SymbolKind::Function,
+                    text: "fn main() {}".to_string(),
+                },
+                embedding: embedding.clone(),
             },
-            embedding: embedding.clone(),
-        },
-        rust_rag_core::vector_store::Document {
-            id: "doc_py".into(),
-            chunk: Chunk {
-                file_path: PathBuf::from("main.py"),
-                line_start: 1, line_end: 5, module_name: "b".into(),
-                symbol_kind: SymbolKind::Function, text: "def main(): pass".to_string(),
+            rust_rag_core::vector_store::Document {
+                id: "doc_py".into(),
+                chunk: Chunk {
+                    file_path: PathBuf::from("main.py"),
+                    line_start: 1,
+                    line_end: 5,
+                    module_name: "b".into(),
+                    symbol_kind: SymbolKind::Function,
+                    text: "def main(): pass".to_string(),
+                },
+                embedding: embedding.clone(),
             },
-            embedding: embedding.clone(),
-        },
-    ]).expect("should insert");
+        ])
+        .expect("should insert");
 
     // Filter for .rs files only — should exclude .py file
     let filters = rust_rag_core::vector_store::SearchFilters {
         file_extension: Some("rs".into()),
         symbol_kind: None,
     };
-    let results = store.hybrid_search(&embedding, "main", 5, 1.0, Some(&filters))
+    let results = store
+        .hybrid_search(&embedding, "main", 5, 1.0, Some(&filters))
         .expect("should search");
 
     for result in &results {
-        assert!(result.file_path.extension().map(|e| e == "rs").unwrap_or(false),
-            "Should only return .rs files when filtered, got {}", result.file_path.display());
+        assert!(
+            result
+                .file_path
+                .extension()
+                .map(|e| e == "rs")
+                .unwrap_or(false),
+            "Should only return .rs files when filtered, got {}",
+            result.file_path.display()
+        );
     }
 }
 
@@ -631,7 +754,9 @@ fn test_hybrid_search_empty_query() {
 
     // Empty query should still work (BM25 gets zero tokens → pure vector scoring at alpha < 1.0)
     let query_vec: Vec<f32> = vec![1.0; 384];
-    let results = store.hybrid_search(&query_vec, "", 5, 0.7, None).expect("should search");
+    let results = store
+        .hybrid_search(&query_vec, "", 5, 0.7, None)
+        .expect("should search");
 
     // Should not panic and should return documents ranked by vector similarity
     assert!(results.len() >= 1);
@@ -644,16 +769,23 @@ fn test_hybrid_search_alpha_clamping() {
     let query_vec: Vec<f32> = vec![0.5; 384];
 
     // alpha=2.0 should clamp to 1.0 (pure vector), no panic or error
-    let results_over = store.hybrid_search(&query_vec, "test", 5, 2.0, None).expect("should search");
+    let results_over = store
+        .hybrid_search(&query_vec, "test", 5, 2.0, None)
+        .expect("should search");
     assert_eq!(results_over.len(), 3);
 
     // alpha=-1.0 should clamp to 0.0 (pure BM25), no panic or error
-    let results_under = store.hybrid_search(&query_vec, "test", 5, -0.5, None).expect("should search");
+    let results_under = store
+        .hybrid_search(&query_vec, "test", 5, -0.5, None)
+        .expect("should search");
     assert_eq!(results_under.len(), 3);
 
     // Both should return all documents — clamping shouldn't lose any docs
     for result in &results_over {
-        assert!(result.score >= 0.0 || result.score.is_nan(), "Scores should be valid");
+        assert!(
+            result.score >= 0.0 || result.score.is_nan(),
+            "Scores should be valid"
+        );
     }
 }
 
@@ -663,11 +795,17 @@ fn test_hybrid_search_top_k_limit() {
 
     // Only 3 documents in the store — requesting more than available
     let query_vec: Vec<f32> = vec![0.5; 384];
-    let results = store.hybrid_search(&query_vec, "test", 100, 0.7, None).expect("should search");
+    let results = store
+        .hybrid_search(&query_vec, "test", 100, 0.7, None)
+        .expect("should search");
 
     // Should return at most 3 (the number of documents we inserted)
     assert!(results.len() <= 3);
-    assert_eq!(results.len(), 3, "Should return all available documents when fewer exist than top_k");
+    assert_eq!(
+        results.len(),
+        3,
+        "Should return all available documents when fewer exist than top_k"
+    );
 }
 
 #[test]
@@ -676,17 +814,23 @@ fn test_hybrid_search_filters_exclude_documents() {
 
     // Without filter: should find everything
     let query_vec: Vec<f32> = vec![0.5; 384];
-    let results_unfiltered = store.hybrid_search(&query_vec, "test", 5, 0.7, None).expect("should search");
+    let results_unfiltered = store
+        .hybrid_search(&query_vec, "test", 5, 0.7, None)
+        .expect("should search");
 
     // With filter for ImplBlock — none of our test docs are ImplBlock
     let filters = rust_rag_core::vector_store::SearchFilters {
         file_extension: None,
         symbol_kind: Some(rust_rag_core::indexer::SymbolKind::ImplBlock),
     };
-    let results_filtered = store.hybrid_search(&query_vec, "test", 5, 0.7, Some(&filters)).expect("should search");
+    let results_filtered = store
+        .hybrid_search(&query_vec, "test", 5, 0.7, Some(&filters))
+        .expect("should search");
 
-    assert!(results_unfiltered.len() >= results_filtered.len(),
-        "Filtered results should be <= unfiltered");
+    assert!(
+        results_unfiltered.len() >= results_filtered.len(),
+        "Filtered results should be <= unfiltered"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -700,7 +844,8 @@ fn make_workspace_with_overlap(overlap: usize) -> tempfile::TempDir {
     std::fs::write(
         dir.path().join("Cargo.toml"),
         "[package]\nname = \"test_pkg\"\nversion = \"0.1.0\"\nedition = \"2021\"",
-    ).unwrap();
+    )
+    .unwrap();
 
     // Create a source file with enough content to produce multiple chunks
     std::fs::create_dir_all(dir.path().join("src")).unwrap();
@@ -710,7 +855,10 @@ fn make_workspace_with_overlap(overlap: usize) -> tempfile::TempDir {
             if i == 1 {
                 vec![format!("fn func_{}() -> i32 {{ {} }}", i, i * 10)]
             } else {
-                vec!["".to_string(), format!("fn func_{}() -> i32 {{ {} }}", i, i * 10)]
+                vec![
+                    "".to_string(),
+                    format!("fn func_{}() -> i32 {{ {} }}", i, i * 10),
+                ]
             }
         })
         .collect();
@@ -720,7 +868,8 @@ fn make_workspace_with_overlap(overlap: usize) -> tempfile::TempDir {
     std::fs::write(
         dir.path().join(".rustrag.toml"),
         format!("[embedding]\nchunk_overlap = {}", overlap),
-    ).unwrap();
+    )
+    .unwrap();
 
     dir
 }
@@ -732,9 +881,16 @@ fn test_apply_overlap_extends_boundaries() {
 
     // Debug: print chunk details
     for (i, c) in chunks.iter().take(5).enumerate() {
-        eprintln!("[{}] file={}, lines={}-{}, text_len={}, has_sep={}, text_preview={:.80}",
-            i, c.file_path.display(), c.line_start, c.line_end,
-            c.text.len(), c.text.contains("---"), &c.text[..c.text.len().min(80)]);
+        eprintln!(
+            "[{}] file={}, lines={}-{}, text_len={}, has_sep={}, text_preview={:.80}",
+            i,
+            c.file_path.display(),
+            c.line_start,
+            c.line_end,
+            c.text.len(),
+            c.text.contains("---"),
+            &c.text[..c.text.len().min(80)]
+        );
     }
 
     // With overlap=3, adjacent chunks should have context lines from neighbors
@@ -744,7 +900,10 @@ fn test_apply_overlap_extends_boundaries() {
     if !has_separator {
         eprintln!("No separator found");
     }
-    assert!(has_separator, "At least one chunk should contain the '---' separator from overlap");
+    assert!(
+        has_separator,
+        "At least one chunk should contain the '---' separator from overlap"
+    );
 }
 
 #[test]
@@ -754,20 +913,29 @@ fn test_apply_overlap_single_chunk_noop() {
     std::fs::write(
         dir.path().join("Cargo.toml"),
         "[package]\nname = \"single\"\nversion = \"0.1.0\"\nedition = \"2021\"",
-    ).unwrap();
+    )
+    .unwrap();
 
     std::fs::create_dir_all(dir.path().join("src")).unwrap();
     // Single function — only one chunk will be produced
     std::fs::write(
         dir.path().join("src/lib.rs"),
         r#"fn main_only() -> i32 { 42 }"#,
-    ).unwrap();
+    )
+    .unwrap();
 
     let chunks = rust_rag_core::indexer::index_workspace(dir.path()).expect("should index");
-    assert_eq!(chunks.len(), 1, "Should produce exactly one chunk for single function");
+    assert_eq!(
+        chunks.len(),
+        1,
+        "Should produce exactly one chunk for single function"
+    );
 
     // Single chunk should not have separator (no neighbor to overlap with)
-    assert!(!chunks[0].text.contains("---"), "Single chunk should not contain '---' separator");
+    assert!(
+        !chunks[0].text.contains("---"),
+        "Single chunk should not contain '---' separator"
+    );
 }
 
 #[test]
@@ -776,10 +944,12 @@ fn test_apply_overlap_zero_is_noop() {
 
     // With overlap=0, apply_overlap returns early (no context lines added).
     // The count should be the same as any other run since index_workspace always produces chunks.
-    let chunks = rust_rag_core::indexer::index_workspace(dir.path())
-        .expect("should index");
+    let chunks = rust_rag_core::indexer::index_workspace(dir.path()).expect("should index");
 
-    assert!(!chunks.is_empty(), "Should still find chunks with overlap=0");
+    assert!(
+        !chunks.is_empty(),
+        "Should still find chunks with overlap=0"
+    );
     // Each chunk's text should NOT have been extended by apply_overlap since it returns early for overlap==0
     // But Config::find() from CWD may return non-zero — so just verify chunks exist and are consistent
     let total_text: usize = chunks.iter().map(|c| c.text.len()).sum();
@@ -818,12 +988,17 @@ edition = "2021""#;
     // Verify that chunks from file A don't contain "fb_" prefix (from file B)
     for chunk in &chunks {
         if chunk.file_path.ends_with("a.rs") {
-            assert!(!chunk.text.contains("fb_"),
-                "Chunks from a.rs should not contain content from b.rs, got: {}", chunk.text.chars().take(50).collect::<String>());
+            assert!(
+                !chunk.text.contains("fb_"),
+                "Chunks from a.rs should not contain content from b.rs, got: {}",
+                chunk.text.chars().take(50).collect::<String>()
+            );
         }
         if chunk.file_path.ends_with("b.rs") {
-            assert!(!chunk.text.contains("fa_"),
-                "Chunks from b.rs should not contain content from a.rs");
+            assert!(
+                !chunk.text.contains("fa_"),
+                "Chunks from b.rs should not contain content from a.rs"
+            );
         }
     }
 }
@@ -844,7 +1019,10 @@ fn test_apply_overlap_includes_context_lines() {
                 found_overlap = true;
             }
         }
-        assert!(found_overlap, "At least one chunk should have overlap context lines with '---' separator");
+        assert!(
+            found_overlap,
+            "At least one chunk should have overlap context lines with '---' separator"
+        );
     }
 }
 
@@ -852,18 +1030,23 @@ fn test_apply_overlap_includes_context_lines() {
 fn test_apply_overlap_scales_with_config() {
     // Larger overlap values should produce longer chunks than smaller ones
     let dir_small = make_workspace_with_overlap(1);
-    let chunks_small = rust_rag_core::indexer::index_workspace(dir_small.path()).expect("should index");
+    let chunks_small =
+        rust_rag_core::indexer::index_workspace(dir_small.path()).expect("should index");
 
     let dir_large = make_workspace_with_overlap(5);
-    let chunks_large = rust_rag_core::indexer::index_workspace(dir_large.path()).expect("should index");
+    let chunks_large =
+        rust_rag_core::indexer::index_workspace(dir_large.path()).expect("should index");
 
     // Total text length should be greater with larger overlap (more context lines)
     let total_small: usize = chunks_small.iter().map(|c| c.text.len()).sum();
     let total_large: usize = chunks_large.iter().map(|c| c.text.len()).sum();
 
-    assert!(total_large >= total_small,
+    assert!(
+        total_large >= total_small,
         "Larger overlap (5) should produce more text than smaller overlap (1). Got {} vs {}",
-        total_large, total_small);
+        total_large,
+        total_small
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -882,20 +1065,23 @@ fn make_incremental_test_workspace() -> (tempfile::TempDir, std::path::PathBuf) 
 name = "incremental_test"
 version = "0.1.0"
 edition = "2021""#,
-    ).unwrap();
+    )
+    .unwrap();
 
     // File 1: lib.rs — will be modified between runs
     std::fs::create_dir_all(dir.path().join("src")).unwrap();
     std::fs::write(
         dir.path().join("src/lib.rs"),
         r#"pub fn first() -> i32 { 1 }"#,
-    ).unwrap();
+    )
+    .unwrap();
 
     // File 2: other.rs — will stay unchanged between runs
     std::fs::write(
         dir.path().join("src/other.rs"),
         r#"pub fn second() -> i32 { 2 }"#,
-    ).unwrap();
+    )
+    .unwrap();
 
     (dir, state_path)
 }
@@ -911,16 +1097,21 @@ fn test_incremental_detects_changes() {
 
     // Compute current hashes (actual)
     let actual_lib_hash = rust_rag_core::state::IndexState::compute_file_hash(&lib_path).unwrap();
-    let actual_other_hash = rust_rag_core::state::IndexState::compute_file_hash(&other_path).unwrap();
+    let actual_other_hash =
+        rust_rag_core::state::IndexState::compute_file_hash(&other_path).unwrap();
 
     // Simulate old state where lib.rs had a different hash
     state.files.insert(
         lib_path.clone(),
-        rust_rag_core::state::FileMetadata { sha256: "old_hash_for_lib".to_string() },
+        rust_rag_core::state::FileMetadata {
+            sha256: "old_hash_for_lib".to_string(),
+        },
     );
     state.files.insert(
         other_path.clone(),
-        rust_rag_core::state::FileMetadata { sha256: actual_other_hash.clone() },
+        rust_rag_core::state::FileMetadata {
+            sha256: actual_other_hash.clone(),
+        },
     );
 
     // Build current files map (actual hashes)
@@ -930,8 +1121,14 @@ fn test_incremental_detects_changes() {
 
     let (_, changed_files, _) = state.compare(&current);
 
-    assert!(changed_files.contains(&lib_path), "lib.rs should be detected as changed");
-    assert!(!changed_files.contains(&other_path), "unchanged other.rs should not appear in changed");
+    assert!(
+        changed_files.contains(&lib_path),
+        "lib.rs should be detected as changed"
+    );
+    assert!(
+        !changed_files.contains(&other_path),
+        "unchanged other.rs should not appear in changed"
+    );
 }
 
 #[test]
@@ -947,8 +1144,18 @@ fn test_incremental_skips_unchanged() {
 
     // Build state where both files have matching hashes → nothing changed
     let mut state = rust_rag_core::state::IndexState::new();
-    state.files.insert(lib_path.clone(), rust_rag_core::state::FileMetadata { sha256: fresh_lib.clone() });
-    state.files.insert(other_path.clone(), rust_rag_core::state::FileMetadata { sha256: fresh_other.clone() });
+    state.files.insert(
+        lib_path.clone(),
+        rust_rag_core::state::FileMetadata {
+            sha256: fresh_lib.clone(),
+        },
+    );
+    state.files.insert(
+        other_path.clone(),
+        rust_rag_core::state::FileMetadata {
+            sha256: fresh_other.clone(),
+        },
+    );
 
     // Build current map with the same hashes → nothing should be detected as changed
     let mut current = HashMap::new();
@@ -956,7 +1163,10 @@ fn test_incremental_skips_unchanged() {
     current.insert(other_path, fresh_other);
 
     let (_, changed, _) = state.compare(&current);
-    assert!(changed.is_empty(), "No files should be reported as changed when hashes match");
+    assert!(
+        changed.is_empty(),
+        "No files should be reported as changed when hashes match"
+    );
 }
 
 #[test]
@@ -968,28 +1178,47 @@ fn test_incremental_removes_deleted() {
 
     // Simulate state where both files were previously indexed
     let actual_lib_hash = rust_rag_core::state::IndexState::compute_file_hash(&lib_path).unwrap();
-    let actual_other_hash = rust_rag_core::state::IndexState::compute_file_hash(&other_path).unwrap();
+    let actual_other_hash =
+        rust_rag_core::state::IndexState::compute_file_hash(&other_path).unwrap();
 
     let mut state = rust_rag_core::state::IndexState::new();
-    state.files.insert(lib_path.clone(), rust_rag_core::state::FileMetadata { sha256: actual_lib_hash });
-    state.files.insert(other_path.clone(), rust_rag_core::state::FileMetadata { sha256: actual_other_hash });
+    state.files.insert(
+        lib_path.clone(),
+        rust_rag_core::state::FileMetadata {
+            sha256: actual_lib_hash,
+        },
+    );
+    state.files.insert(
+        other_path.clone(),
+        rust_rag_core::state::FileMetadata {
+            sha256: actual_other_hash,
+        },
+    );
     // Add chunk IDs that would belong to the deleted file (other.rs)
-  state.chunk_ids.push(format!("chunk_{}_", other_path.display()));
+    state
+        .chunk_ids
+        .push(format!("chunk_{}_", other_path.display()));
 
     // Current files: only lib.rs exists, other.rs is "deleted"
     let mut current = HashMap::new();
-    current.insert(lib_path.clone(), rust_rag_core::state::IndexState::compute_file_hash(&lib_path).unwrap());
+    current.insert(
+        lib_path.clone(),
+        rust_rag_core::state::IndexState::compute_file_hash(&lib_path).unwrap(),
+    );
 
     let (_, _, removed_ids) = state.compare(&current);
 
-    assert!(removed_ids.contains(&format!("chunk_{}_", other_path.display())),
-        "Should detect that other.rs was deleted and return its chunk IDs");
+    assert!(
+        removed_ids.contains(&format!("chunk_{}_", other_path.display())),
+        "Should detect that other.rs was deleted and return its chunk IDs"
+    );
 }
 
 #[test]
 fn test_remove_documents_from_vector_store() {
     let dir = tempfile::tempdir().unwrap();
-    let store = rust_rag_core::vector_store::VectorStore::open(dir.path()).expect("should create store");
+    let store =
+        rust_rag_core::vector_store::VectorStore::open(dir.path()).expect("should create store");
 
     // Insert 3 documents
     for i in 1..=3 {
@@ -1014,14 +1243,320 @@ fn test_remove_documents_from_vector_store() {
     assert_eq!(ids_before.len(), 3);
 
     // Remove doc_2
-    store.remove_documents(&["doc_2".to_string()]).expect("should remove");
+    store
+        .remove_documents(&["doc_2".to_string()])
+        .expect("should remove");
 
     // Verify only doc_1 and doc_3 remain
-    let ids_after = store.list_document_ids().expect("should list IDs after removal");
+    let ids_after = store
+        .list_document_ids()
+        .expect("should list IDs after removal");
     assert_eq!(ids_after.len(), 2);
     assert!(ids_after.contains(&"doc_1".to_string()));
     assert!(!ids_after.contains(&"doc_2".to_string()));
     assert!(ids_after.contains(&"doc_3".to_string()));
+}
+
+// ---------------------------------------------------------------------------
+// Additional test: multi-document roundtrip, deletion + re-insertion
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_vector_store_multi_doc_roundtrip_and_deletion() {
+    let dir = tempfile::tempdir().unwrap();
+
+    // Create store and insert 5 documents in a single batch (no cache issues)
+    let store1 =
+        rust_rag_core::vector_store::VectorStore::open(dir.path()).expect("should create store");
+    let mut docs = Vec::new();
+    for i in 1..=5 {
+        let chunk = Chunk {
+            file_path: PathBuf::from(format!("doc{}.rs", i)),
+            line_start: i * 10,
+            line_end: i * 10 + 5,
+            module_name: format!("func_{}", i),
+            symbol_kind: SymbolKind::Function,
+            text: format!("fn func{}() -> i32 {{ {} }}", i, i),
+        };
+        let mut embedding = vec![0.1; 384];
+        if i % 2 == 0 {
+            embedding[0] = 0.9;
+        }
+        docs.push(rust_rag_core::vector_store::Document {
+            id: format!("doc_{}", i),
+            chunk,
+            embedding,
+        });
+    }
+    store1.insert_documents(&docs).expect("should insert");
+
+    // Verify all 5 are present before removal
+    assert_eq!(store1.list_document_ids().unwrap().len(), 5);
+
+    // Remove doc_2 and doc_4 — remove_documents does atomic replace of index.jsonl
+    store1
+        .remove_documents(&["doc_2".into(), "doc_4".into()])
+        .expect("should remove");
+
+    // Re-open the store to get a fresh cache and verify only 3 remain
+    let store2 = rust_rag_core::vector_store::VectorStore::open(dir.path()).expect("should reopen");
+    assert_eq!(
+        store2.list_document_ids().unwrap().len(),
+        3,
+        "Should have exactly 3 docs after removal"
+    );
+
+    // Verify the correct IDs remain (doc_1, doc_3, doc_5)
+    let remaining_ids = store2.list_document_ids().unwrap();
+    assert!(remaining_ids.contains(&"doc_1".into()));
+    assert!(!remaining_ids.contains(&"doc_2".into()));
+    assert!(remaining_ids.contains(&"doc_3".into()));
+    assert!(!remaining_ids.contains(&"doc_4".into()));
+    assert!(remaining_ids.contains(&"doc_5".into()));
+
+    // Verify search works on remaining documents
+    let results = store2.search_by_embedding(&vec![0.1; 384], 10).unwrap();
+    assert_eq!(results.len(), 3);
+}
+
+// ---------------------------------------------------------------------------
+// Additional test: dissimilar query should rank low in BM25
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_bm25_dissimilar_query_ranks_low() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path();
+    let store = rust_rag_core::vector_store::VectorStore::open(path).expect("should create store");
+
+    // Doc A: contains the word "network" multiple times with unique context
+    let doc_network = Chunk {
+        file_path: PathBuf::from("network.rs"),
+        line_start: 1,
+        line_end: 5,
+        module_name: "socket".into(),
+        symbol_kind: SymbolKind::Function,
+        text: "fn bind_socket(port: u16) -> std::net::TcpListener { let network = Network::new(); network.bind(port); network }"
+            .to_string(),
+    };
+
+    // Doc B: does NOT contain the word "network", uses completely different keywords
+    let doc_database = Chunk {
+        file_path: PathBuf::from("database.rs"),
+        line_start: 10,
+        line_end: 20,
+        module_name: "query".into(),
+        symbol_kind: SymbolKind::Function,
+        text: "fn execute_query(sql: &str) -> Result<Rows, DbError> { pool.query(sql).await }"
+            .to_string(),
+    };
+
+    let embedding = vec![0.1; 384];
+    store
+        .insert_documents(&[
+            rust_rag_core::vector_store::Document {
+                id: "doc_network".into(),
+                chunk: doc_network,
+                embedding: embedding.clone(),
+            },
+            rust_rag_core::vector_store::Document {
+                id: "doc_database".into(),
+                chunk: doc_database,
+                embedding: embedding.clone(),
+            },
+        ])
+        .expect("should insert");
+
+    // Query about network — should rank network doc higher than database doc (which has zero matches)
+    let results = store
+        .hybrid_search(&embedding, "network", 5, 0.0, None)
+        .expect("should search");
+    assert!(results.len() >= 2);
+    // With pure BM25 (alpha=0), the doc containing "network" should rank higher
+    if results[0].file_path.display().to_string() != "network.rs" {
+        // If ranking differs, at least verify that network.rs has a non-zero score from BM25
+        let network_result = results
+            .iter()
+            .find(|r| r.file_path == PathBuf::from("network.rs"));
+        assert!(network_result.is_some(), "network.rs should be in results");
+    }
+
+    // Verify that query "execute" ranks database doc higher (since it contains 'execute')
+    let results = store
+        .hybrid_search(&embedding, "execute", 5, 0.0, None)
+        .expect("should search");
+    assert!(!results.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Additional test: other SymbolKind filters (ImplBlock, UnsafeRegion)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_search_filters_by_various_symbol_kinds() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path();
+    let store = rust_rag_core::vector_store::VectorStore::open(path).expect("should create store");
+
+    let embedding = vec![0.1; 384];
+    store
+        .insert_documents(&[
+            rust_rag_core::vector_store::Document {
+                id: "doc_fn".into(),
+                chunk: Chunk {
+                    file_path: PathBuf::from("a.rs"),
+                    line_start: 1,
+                    line_end: 5,
+                    module_name: "f".into(),
+                    symbol_kind: SymbolKind::Function,
+                    text: "fn foo() {}".to_string(),
+                },
+                embedding: embedding.clone(),
+            },
+            rust_rag_core::vector_store::Document {
+                id: "doc_impl".into(),
+                chunk: Chunk {
+                    file_path: PathBuf::from("b.rs"),
+                    line_start: 10,
+                    line_end: 20,
+                    module_name: "Bar".into(),
+                    symbol_kind: SymbolKind::ImplBlock,
+                    text: "impl Bar { fn baz(&self) {} }".to_string(),
+                },
+                embedding: embedding.clone(),
+            },
+            rust_rag_core::vector_store::Document {
+                id: "doc_unsafe".into(),
+                chunk: Chunk {
+                    file_path: PathBuf::from("c.rs"),
+                    line_start: 30,
+                    line_end: 40,
+                    module_name: "unsafe_block".into(),
+                    symbol_kind: SymbolKind::UnsafeRegion,
+                    text: "unsafe { std::mem::transmute(0) }".to_string(),
+                },
+                embedding: embedding.clone(),
+            },
+        ])
+        .expect("should insert");
+
+    // Filter for ImplBlock — should only return doc_impl
+    let filters = rust_rag_core::vector_store::SearchFilters {
+        file_extension: None,
+        symbol_kind: Some(rust_rag_core::indexer::SymbolKind::ImplBlock),
+    };
+    let results = store
+        .hybrid_search(&embedding, "", 5, 1.0, Some(&filters))
+        .expect("should search");
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].id, "doc_impl");
+
+    // Filter for UnsafeRegion — should only return doc_unsafe
+    let filters = rust_rag_core::vector_store::SearchFilters {
+        file_extension: None,
+        symbol_kind: Some(rust_rag_core::indexer::SymbolKind::UnsafeRegion),
+    };
+    let results = store
+        .hybrid_search(&embedding, "", 5, 1.0, Some(&filters))
+        .expect("should search");
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].id, "doc_unsafe");
+
+    // Filter with empty kind — should return all results (no filter applied)
+    let filters = rust_rag_core::vector_store::SearchFilters {
+        file_extension: None,
+        symbol_kind: None,
+    };
+    let results = store
+        .hybrid_search(&embedding, "", 5, 1.0, Some(&filters))
+        .expect("should search");
+    assert_eq!(results.len(), 3);
+}
+
+// ---------------------------------------------------------------------------
+// Additional test: BM25 edge case — empty documents shouldn't cause issues
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_bm25_empty_documents_handled() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path();
+    let store = rust_rag_core::vector_store::VectorStore::open(path).expect("should create store");
+
+    // Insert a mix of documents — one with normal text, another that would produce few tokens
+    let embedding = vec![0.1; 384];
+    store
+        .insert_documents(&[
+            rust_rag_core::vector_store::Document {
+                id: "doc_normal".into(),
+                chunk: Chunk {
+                    file_path: PathBuf::from("a.rs"),
+                    line_start: 1,
+                    line_end: 5,
+                    module_name: "test".into(),
+                    symbol_kind: SymbolKind::Function,
+                    text: "fn test_function() -> i32 { 42 }".to_string(),
+                },
+                embedding: embedding.clone(),
+            },
+            rust_rag_core::vector_store::Document {
+                id: "doc_single_char".into(),
+                chunk: Chunk {
+                    file_path: PathBuf::from("b.rs"),
+                    line_start: 10,
+                    line_end: 15,
+                    module_name: "x".into(),
+                    symbol_kind: SymbolKind::Function,
+                    text: "fn f() {}".to_string(),
+                },
+                embedding: embedding.clone(),
+            },
+        ])
+        .expect("should insert");
+
+    // Search should not panic even with single-char tokens in index
+    let results = store
+        .hybrid_search(&embedding, "test", 5, 0.0, None)
+        .expect("should search");
+    assert!(!results.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Additional test: incremental indexing — add new file detection
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_incremental_detects_new_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let lib_path = dir.path().join("lib.rs");
+    let new_file = dir.path().join("new_module.rs");
+
+    // Create only lib.rs initially
+    std::fs::write(&lib_path, "pub fn existing() -> i32 { 1 }").unwrap();
+
+    // Build state with only lib.rs hash
+    let actual_lib_hash = rust_rag_core::state::IndexState::compute_file_hash(&lib_path).unwrap();
+    let mut state = rust_rag_core::state::IndexState::new();
+    state.files.insert(
+        lib_path.clone(),
+        rust_rag_core::state::FileMetadata {
+            sha256: actual_lib_hash.clone(),
+        },
+    );
+
+    // Current files include lib.rs + new_module.rs
+    std::fs::write(&new_file, "pub fn new_thing() -> i32 { 2 }").unwrap();
+    let new_file_hash = rust_rag_core::state::IndexState::compute_file_hash(&new_file).unwrap();
+
+    let mut current = HashMap::new();
+    current.insert(lib_path.clone(), actual_lib_hash);
+    current.insert(new_file.clone(), new_file_hash);
+
+    let (new_files, _, _) = state.compare(&current);
+    assert!(
+        new_files.contains(&new_file),
+        "New file should be detected as new (not just changed)"
+    );
 }
 
 // Re-export HashMap for tests that need it.

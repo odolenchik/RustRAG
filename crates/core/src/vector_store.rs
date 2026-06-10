@@ -1,9 +1,9 @@
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
-use std::sync::RwLock;
-use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::RwLock;
 
 /// A document in the vector store with its embedding and metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -21,7 +21,9 @@ struct DocCacheEntry {
 
 impl std::fmt::Debug for DocCacheEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DocCacheEntry").field("documents", &"[..]").finish()
+        f.debug_struct("DocCacheEntry")
+            .field("documents", &"[..]")
+            .finish()
     }
 }
 
@@ -33,7 +35,7 @@ pub struct VectorStore {
 }
 
 impl VectorStore {
-   /// Open or create a vector store at the given directory.
+    /// Open or create a vector store at the given directory.
     pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self> {
         let path = path.as_ref();
         std::fs::create_dir_all(path)?;
@@ -60,7 +62,10 @@ impl VectorStore {
             std::fs::write(&index_path, "")?;
         }
 
-        let file = std::fs::OpenOptions::new().append(true).create(true).open(index_path)?;
+        let file = std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(index_path)?;
         let mut writer = std::io::BufWriter::new(file);
         for doc in documents {
             let value = serde_json::json!({
@@ -115,10 +120,11 @@ impl VectorStore {
         Ok(())
     }
 
-   /// List all document IDs currently stored in the index.
+    /// List all document IDs currently stored in the index.
     pub fn list_document_ids(&self) -> Result<Vec<String>> {
         let docs = self.load_documents()?;
-        Ok(docs.iter()
+        Ok(docs
+            .iter()
             .filter_map(|v| v["id"].as_str().map(String::from))
             .collect())
     }
@@ -126,7 +132,9 @@ impl VectorStore {
     /// Lazy-load documents from index.jsonl, using mtime-based cache.
     fn load_documents(&self) -> Result<Vec<serde_json::Value>> {
         let index_path = self.path.join("index.jsonl");
-        if !index_path.exists() { return Ok(Vec::new()); }
+        if !index_path.exists() {
+            return Ok(Vec::new());
+        }
 
         // Get current file mtime for cache invalidation
         let current_mtime = std::fs::metadata(&index_path)
@@ -153,10 +161,13 @@ impl VectorStore {
             .map(|line| serde_json::from_str(line))
             .collect::<Result<Vec<_>, _>>()?;
 
-       // Update cache and return a clone for the caller
+        // Update cache and return a clone for the caller
         if let Some(mtime) = current_mtime {
             let mut cache = self.cache.write().unwrap();
-            *cache = Some(DocCacheEntry { mtime, documents: documents.clone() });
+            *cache = Some(DocCacheEntry {
+                mtime,
+                documents: documents.clone(),
+            });
         }
 
         Ok(documents)
@@ -169,7 +180,11 @@ impl VectorStore {
     }
 
     /// Search by embedding vector. Returns top-k results with relevance scores.
-    pub fn search_by_embedding(&self, query_vec: &[f32], top_k: usize) -> Result<Vec<SearchResult>> {
+    pub fn search_by_embedding(
+        &self,
+        query_vec: &[f32],
+        top_k: usize,
+    ) -> Result<Vec<SearchResult>> {
         self.hybrid_search_internal(query_vec, "", top_k, 1.0, None, true)
     }
 
@@ -183,7 +198,14 @@ impl VectorStore {
         alpha: f64,
         filters: Option<&SearchFilters>,
     ) -> Result<Vec<SearchResult>> {
-        self.hybrid_search_internal(query_vec, query_text, top_k, alpha.clamp(0.0, 1.0), filters, false)
+        self.hybrid_search_internal(
+            query_vec,
+            query_text,
+            top_k,
+            alpha.clamp(0.0, 1.0),
+            filters,
+            false,
+        )
     }
 
     /// Internal hybrid search shared by both public methods.
@@ -196,21 +218,23 @@ impl VectorStore {
         filters: Option<&SearchFilters>,
         pure_vector: bool,
     ) -> Result<Vec<SearchResult>> {
-      let documents = self.load_documents()?;
+        let documents = self.load_documents()?;
 
         if documents.is_empty() {
             return Ok(Vec::new());
         }
 
         // Build BM25 inverted index in-memory (fast for typical workspaces)
-        let (inverted, doc_stats): (InvertedIndex, HashMap<String, DocStat>) = self.build_inverted_index(&documents)?;
+        let (inverted, doc_stats): (InvertedIndex, HashMap<String, DocStat>) =
+            self.build_inverted_index(&documents)?;
 
         // Tokenize query text for BM25
         let query_tokens = tokenize(query_text);
 
         // Compute average document length for BM25 normalization
         let total_docs = documents.len();
-        let avgdl: f64 = doc_stats.values().map(|s| s.doc_len as f64).sum::<f64>() / total_docs.max(1) as f64;
+        let avgdl: f64 =
+            doc_stats.values().map(|s| s.doc_len as f64).sum::<f64>() / total_docs.max(1) as f64;
 
         // Score each document with both vector similarity and BM25.
         // Stores (combined_score, vec_similarity_f32, original_index) so we don't recompute cosine sim.
@@ -223,13 +247,22 @@ impl VectorStore {
             // --- Vector similarity score (computed once per document) ---
             let vec_score_val: f32 = if let Some(embedding) = doc.get("embedding") {
                 if let Some(embed_arr) = embedding.as_array() {
-                    let embed_f32: Vec<f32> = embed_arr.iter().filter_map(|v| v.as_f64()).map(|f| f as f32).collect();
+                    let embed_f32: Vec<f32> = embed_arr
+                        .iter()
+                        .filter_map(|v| v.as_f64())
+                        .map(|f| f as f32)
+                        .collect();
                     cosine_similarity(query_vec, &embed_f32)
-                } else { 0.0 }
-            } else { 0.0 };
+                } else {
+                    0.0
+                }
+            } else {
+                0.0
+            };
 
             // --- BM25 score ---
-            let bm25_val: f64 = if !pure_vector && !query_tokens.is_empty() && !inverted.is_empty() {
+            let bm25_val: f64 = if !pure_vector && !query_tokens.is_empty() && !inverted.is_empty()
+            {
                 let mut doc_bm25: f64 = 0.0;
                 for token in &query_tokens {
                     if let Some(postings) = inverted.get(token.as_str()) {
@@ -237,15 +270,27 @@ impl VectorStore {
                         let posting = postings.iter().find(|p| p.doc_id == doc_id);
                         if let Some(p) = posting {
                             let df = postings.len() as u64;
-                            doc_bm25 += bm25_term_score(p.tf, doc_stats.get(&doc_id).map(|s| s.doc_len).unwrap_or(0.0), avgdl, df, total_docs);
+                            doc_bm25 += bm25_term_score(
+                                p.tf,
+                                doc_stats.get(&doc_id).map(|s| s.doc_len).unwrap_or(0.0),
+                                avgdl,
+                                df,
+                                total_docs,
+                            );
                         }
                     }
                 }
                 doc_bm25
-            } else { 0.0 };
+            } else {
+                0.0
+            };
 
-            // Normalize BM25 to [0,1] range
-            let bm25_normalized = if avgdl > 0.0 { (bm25_val / avgdl).max(0.0) } else { 0.0 };
+            // Normalize BM25 to [0,1] range — guard against all-empty-documents edge case.
+            let bm25_normalized = if total_docs > 0 && avgdl > 0.0 {
+                (bm25_val / avgdl).max(0.0)
+            } else {
+                0.0
+            };
 
             // --- Combine scores ---
             let combined = alpha * vec_score_val as f64 + (1.0 - alpha) * bm25_normalized;
@@ -258,7 +303,9 @@ impl VectorStore {
         // Apply filters and build SearchResult objects (reuse precomputed similarity)
         let mut results: Vec<SearchResult> = Vec::new();
         for (_, vec_sim, idx) in scored {
-            if results.len() >= top_k { break; }
+            if results.len() >= top_k {
+                break;
+            }
 
             let doc = &documents[idx];
 
@@ -275,8 +322,9 @@ impl VectorStore {
                 line_start: doc["line_start"].as_u64().unwrap_or(0) as usize,
                 line_end: doc["line_end"].as_u64().unwrap_or(0) as usize,
                 module_name: doc["module_name"].as_str().unwrap_or("").to_string(),
-                symbol_kind: doc["symbol_kind"].as_str().map(|s| {
-                    match s.to_lowercase().as_str() {
+                symbol_kind: doc["symbol_kind"]
+                    .as_str()
+                    .map(|s| match s.to_lowercase().as_str() {
                         "function" => SymbolKind::Function,
                         "implblock" => SymbolKind::ImplBlock,
                         "unsaferegion" => SymbolKind::UnsafeRegion,
@@ -286,8 +334,7 @@ impl VectorStore {
                         "enum" => SymbolKind::Enum,
                         "macro" => SymbolKind::Macro,
                         _ => panic!("Unknown SymbolKind in index: {}", s),
-                    }
-                }),
+                    }),
                 text: doc["text"].as_str().unwrap_or("").to_string(),
                 score: vec_sim,
             });
@@ -307,7 +354,9 @@ impl VectorStore {
         for doc in documents {
             let text = doc["text"].as_str().unwrap_or("");
             let doc_id = doc["id"].as_str().unwrap_or("").to_string();
-            if doc_id.is_empty() || text.trim().is_empty() { continue; }
+            if doc_id.is_empty() || text.trim().is_empty() {
+                continue;
+            }
 
             // Tokenize: lowercase + split on non-alphanumeric (keep underscores for Rust identifiers)
             let tokens = tokenize(text);
@@ -362,13 +411,18 @@ const BM25_B: f64 = 0.75;
 
 /// Compute BM25 score for a single term in a single document.
 fn bm25_term_score(tf: f64, doc_len: f64, avgdl: f64, df: u64, total_docs: usize) -> f64 {
-    if tf == 0.0 || df as usize >= total_docs { return 0.0; }
+    if tf == 0.0 || df as usize >= total_docs {
+        return 0.0;
+    }
 
     // IDF component
-    let idf = ((total_docs as f64 - df as f64 + 0.5) / (df as f64 + 0.5)).ln().max(1e-10);
+    let idf = ((total_docs as f64 - df as f64 + 0.5) / (df as f64 + 0.5))
+        .ln()
+        .max(1e-10);
 
     // TF component with length normalization
-    let tf_component = tf / (tf + BM25_K1 * (1.0 - BM25_B + BM25_B * doc_len.max(1.0) / avgdl.max(1.0)));
+    let tf_component =
+        tf / (tf + BM25_K1 * (1.0 - BM25_B + BM25_B * doc_len.max(1.0) / avgdl.max(1.0)));
 
     idf * tf_component
 }
@@ -379,10 +433,11 @@ fn bm25_term_score(tf: f64, doc_len: f64, avgdl: f64, df: u64, total_docs: usize
 
 /// Tokenize text into lowercase alphanumeric tokens for BM25.
 /// Splits on whitespace and punctuation, keeps Rust identifiers intact.
+/// Allows single-character tokens (important for generics like `T`, `U` and short vars).
 fn tokenize(text: &str) -> Vec<String> {
     text.to_lowercase()
         .split(|c: char| !c.is_alphanumeric() && c != '_')
-        .filter(|s| s.len() > 1) // skip single-char tokens (noise)
+        .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
         .collect()
 }
@@ -406,7 +461,9 @@ impl SearchFilters {
                 .extension()
                 .map(|e| e.to_string_lossy())
                 .unwrap_or_default();
-            if actual_ext.as_ref() != ext { return false; }
+            if actual_ext.as_ref() != ext {
+                return false;
+            }
         }
         if let Some(kind) = &self.symbol_kind {
             let stored = doc.get("symbol_kind").and_then(|v| v.as_str());
@@ -461,18 +518,16 @@ impl<'de> Deserialize<'de> for SearchResult {
             line_start: helper.line_start,
             line_end: helper.line_end,
             module_name: helper.module_name,
-            symbol_kind: helper.symbol_kind.map(|s| {
-                match s.to_lowercase().as_str() {
-                    "function" => SymbolKind::Function,
-                    "implblock" => SymbolKind::ImplBlock,
-                    "unsaferegion" => SymbolKind::UnsafeRegion,
-                    "traitimpl" => SymbolKind::TraitImpl,
-                    "module" => SymbolKind::Module,
-                    "struct" => SymbolKind::Struct,
-                    "enum" => SymbolKind::Enum,
-                    "macro" => SymbolKind::Macro,
-                    other => panic!("Unknown SymbolKind in index: {}", other),
-                }
+            symbol_kind: helper.symbol_kind.map(|s| match s.to_lowercase().as_str() {
+                "function" => SymbolKind::Function,
+                "implblock" => SymbolKind::ImplBlock,
+                "unsaferegion" => SymbolKind::UnsafeRegion,
+                "traitimpl" => SymbolKind::TraitImpl,
+                "module" => SymbolKind::Module,
+                "struct" => SymbolKind::Struct,
+                "enum" => SymbolKind::Enum,
+                "macro" => SymbolKind::Macro,
+                other => panic!("Unknown SymbolKind in index: {}", other),
             }),
             text: helper.text,
             score: helper.score,

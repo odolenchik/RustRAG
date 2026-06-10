@@ -4,7 +4,10 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
-use fastembed::{TextEmbedding, UserDefinedEmbeddingModel, InitOptionsUserDefined, TokenizerFiles, Pooling, read_file_to_bytes};
+use fastembed::{
+    read_file_to_bytes, InitOptionsUserDefined, Pooling, TextEmbedding, TokenizerFiles,
+    UserDefinedEmbeddingModel,
+};
 
 /// Standard HuggingFace cache directory for downloaded models.
 fn hf_cache_model_dir() -> Option<PathBuf> {
@@ -12,7 +15,9 @@ fn hf_cache_model_dir() -> Option<PathBuf> {
     let home = std::env::var("HOME").ok()?;
     let hub = PathBuf::from(&home).join(".cache/huggingface/hub");
 
-    if !hub.exists() { return None; }
+    if !hub.exists() {
+        return None;
+    }
 
     // Look for model.onnx in the hub root (flat layout from manual copy)
     if hub.join("model.onnx").exists() {
@@ -22,13 +27,17 @@ fn hf_cache_model_dir() -> Option<PathBuf> {
     // Check subdirectories: models--Xenova--bge-small-en-v1.5/snapshots/*/onnx/
     for entry in std::fs::read_dir(&hub).ok()?.flatten() {
         let path = entry.path();
-        if !path.is_dir() { continue; }
+        if !path.is_dir() {
+            continue;
+        }
 
         // Check snapshots/*/onnx/model.onnx (standard HF layout)
         if let Ok(snapshots) = std::fs::read_dir(&path) {
             for snapshot in snapshots.flatten() {
                 let snap_path = snapshot.path();
-                if !snap_path.is_dir() { continue; }
+                if !snap_path.is_dir() {
+                    continue;
+                }
 
                 // Canonicalize to resolve symlinks and .. components
                 if let Ok(resolved) = snap_path.canonicalize() {
@@ -82,18 +91,22 @@ fn model_dir() -> PathBuf {
 
 /// Initialize the embedding model from local ONNX + tokenizer files.
 fn try_init_embedder(model_dir: &Path) -> Result<TextEmbedding> {
-    let onnx_bytes = std::fs::read(model_dir.join("model.onnx"))
-        .context("Failed to read model.onnx")?;
+    let onnx_bytes =
+        std::fs::read(model_dir.join("model.onnx")).context("Failed to read model.onnx")?;
 
     let tokenizer_files = TokenizerFiles {
-        tokenizer_file: read_file_to_bytes(&model_dir.join("tokenizer.json")).context("Failed to read tokenizer.json")?,
-        config_file: read_file_to_bytes(&model_dir.join("config.json")).context("Failed to read config.json")?,
-        special_tokens_map_file: read_file_to_bytes(&model_dir.join("special_tokens_map.json")).context("Failed to read special_tokens_map.json")?,
-        tokenizer_config_file: read_file_to_bytes(&model_dir.join("tokenizer_config.json")).context("Failed to read tokenizer_config.json")?,
+        tokenizer_file: read_file_to_bytes(&model_dir.join("tokenizer.json"))
+            .context("Failed to read tokenizer.json")?,
+        config_file: read_file_to_bytes(&model_dir.join("config.json"))
+            .context("Failed to read config.json")?,
+        special_tokens_map_file: read_file_to_bytes(&model_dir.join("special_tokens_map.json"))
+            .context("Failed to read special_tokens_map.json")?,
+        tokenizer_config_file: read_file_to_bytes(&model_dir.join("tokenizer_config.json"))
+            .context("Failed to read tokenizer_config.json")?,
     };
 
-    let user_model = UserDefinedEmbeddingModel::new(onnx_bytes, tokenizer_files)
-        .with_pooling(Pooling::Cls);
+    let user_model =
+        UserDefinedEmbeddingModel::new(onnx_bytes, tokenizer_files).with_pooling(Pooling::Cls);
 
     TextEmbedding::try_new_from_user_defined(user_model, InitOptionsUserDefined::default())
         .context("Failed to initialize user-defined embedding model")
@@ -131,13 +144,13 @@ fn init_embedder() -> Result<TextEmbedding> {
 }
 
 /// Lazy-initialized singleton embedder — loads ONNX model once on first use.
-static EMBEDDER: LazyLock<TextEmbedding> = LazyLock::new(|| {
-    init_embedder().expect("Embedding model initialization failed")
-});
+static EMBEDDER: LazyLock<TextEmbedding> =
+    LazyLock::new(|| init_embedder().expect("Embedding model initialization failed"));
 
 /// Embed a single text chunk into a vector using the local embedding model.
 pub fn embed(text: &str) -> Result<Vec<f32>> {
-    let result = EMBEDDER.embed(vec![text.to_string()], None /* batch_size */)
+    let result = EMBEDDER
+        .embed(vec![text.to_string()], None /* batch_size */)
         .context("Failed to compute embedding")?;
 
     // Result is Vec<Embedding> — iterate over batches, flatten to Vec<f32>
@@ -147,7 +160,8 @@ pub fn embed(text: &str) -> Result<Vec<f32>> {
 /// Embed multiple texts in a single ONNX inference call. Returns one vector per input text.
 pub fn embed_batch(texts: &[&str]) -> Result<Vec<Vec<f32>>> {
     let strings: Vec<String> = texts.iter().map(|t| t.to_string()).collect();
-    let results = EMBEDDER.embed(strings, None)
+    let results = EMBEDDER
+        .embed(strings, None)
         .context("Failed to compute batch embedding")?;
 
     Ok(results.into_iter().collect())
@@ -189,21 +203,26 @@ impl EmbedCache {
 
     /// Open the embed cache for a workspace's `.rustrag` directory.
     pub fn open(rustrag_dir: &Path) -> Self {
-        Self { path: rustrag_dir.join("embed_cache.jsonl") }
+        Self {
+            path: rustrag_dir.join("embed_cache.jsonl"),
+        }
     }
 
     /// Look up cached embeddings for texts, returning (Vec<Option<Vec<f32>>>).
     /// Returns None for uncached entries.
     pub fn lookup(&self, texts: &[&str]) -> Result<Vec<Option<Vec<f32>>>> {
         let cache = self.read_cache()?;
-        Ok(texts.iter()
+        Ok(texts
+            .iter()
             .map(|t| cache.get(&hash_text(t)).cloned())
             .collect())
     }
 
-  fn read_cache(&self) -> Result<std::collections::HashMap<String, Vec<f32>>> {
+    fn read_cache(&self) -> Result<std::collections::HashMap<String, Vec<f32>>> {
         let mut cache = std::collections::HashMap::new();
-        if !self.path.exists() { return Ok(cache); }
+        if !self.path.exists() {
+            return Ok(cache);
+        }
 
         let current_model_id = Self::model_id();
         let content = std::fs::read_to_string(&self.path)?;
@@ -215,7 +234,10 @@ impl EmbedCache {
                 let stored_model_id = first_line.trim_start_matches("#model_id=").to_string();
                 if stored_model_id != current_model_id {
                     // Model changed — cache is stale, return empty to force regeneration
-                    eprintln!("[rustrag] Embedding cache invalidated: model_id mismatch ({} != {})", stored_model_id, current_model_id);
+                    eprintln!(
+                        "[rustrag] Embedding cache invalidated: model_id mismatch ({} != {})",
+                        stored_model_id, current_model_id
+                    );
                     return Ok(cache);
                 }
                 lines.next(); // skip the marker line
@@ -224,8 +246,11 @@ impl EmbedCache {
 
         for line in lines.filter(|l| !l.trim().is_empty()) {
             if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {
-                if let (Some(hash), Some(embed)) = (entry["hash"].as_str(), entry.get("embedding")) {
-                    let vec: Vec<f32> = embed.as_array().unwrap_or(&Vec::new())
+                if let (Some(hash), Some(embed)) = (entry["hash"].as_str(), entry.get("embedding"))
+                {
+                    let vec: Vec<f32> = embed
+                        .as_array()
+                        .unwrap_or(&Vec::new())
                         .iter()
                         .filter_map(|v| v.as_f64())
                         .map(|f| f as f32)
@@ -238,8 +263,15 @@ impl EmbedCache {
     }
 
     /// Write new embeddings for previously uncached entries. Returns the count of cached hits.
-    pub fn write_back(&self, texts: &[&str], embeddings: &[Vec<f32>], hit_count: &mut usize) -> Result<()> {
-        if texts.is_empty() || embeddings.is_empty() { return Ok(()); }
+    pub fn write_back(
+        &self,
+        texts: &[&str],
+        embeddings: &[Vec<f32>],
+        hit_count: &mut usize,
+    ) -> Result<()> {
+        if texts.is_empty() || embeddings.is_empty() {
+            return Ok(());
+        }
 
         let mut cache = self.read_cache()?;
         for (text, embedding) in texts.iter().zip(embeddings.iter()) {
@@ -250,7 +282,10 @@ impl EmbedCache {
             }
         }
 
-        let file = std::fs::OpenOptions::new().write(true).create(true).open(&self.path)?;
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .open(&self.path)?;
         let mut writer = std::io::BufWriter::new(file);
 
         // Write model_id marker as first line
@@ -266,7 +301,9 @@ impl EmbedCache {
 
     /// Clear the embed cache file.
     pub fn clear(&self) -> Result<()> {
-        if self.path.exists() { std::fs::remove_file(&self.path)?; }
+        if self.path.exists() {
+            std::fs::remove_file(&self.path)?;
+        }
         Ok(())
     }
 }
@@ -313,16 +350,18 @@ pub fn download_model(target: &Path) -> Result<()> {
 
         let response = client.get(&url).send()?;
         if !response.status().is_success() {
-            anyhow::bail!("Failed to download {}: HTTP {}", remote_path, response.status());
+            anyhow::bail!(
+                "Failed to download {}: HTTP {}",
+                remote_path,
+                response.status()
+            );
         }
 
         let bytes = response.bytes()?;
         println!(
             "  -> {} ({} bytes)",
             local_name,
-            bytes.len()
-                .try_into()
-                .unwrap_or(std::u64::MAX)
+            bytes.len().try_into().unwrap_or(std::u64::MAX)
         );
         std::fs::write(target.join(local_name), &bytes)?;
     }

@@ -6,14 +6,23 @@ use crate::vector_store::SearchResult;
 
 /// Retrieve relevant chunks for a given query from an existing vector store.
 /// Uses hybrid search (BM25 + cosine similarity) by default.
-pub fn retrieve(query: &str, embedding: &[f32], vector_store: &crate::vector_store::VectorStore, top_k: usize) -> Result<Vec<SearchResult>> {
+pub fn retrieve(
+    query: &str,
+    embedding: &[f32],
+    vector_store: &crate::vector_store::VectorStore,
+    top_k: usize,
+) -> Result<Vec<SearchResult>> {
     // Hybrid search with alpha=0.7 (70% vector / 30% BM25 blend is a good starting point)
     let results = vector_store.hybrid_search(embedding, query, top_k, 0.7, None)?;
     Ok(results)
 }
 
 /// Retrieve relevant chunks from in-memory chunks (no persistent store).
-pub fn retrieve_from_chunks(chunks: &[Chunk], query: &str, top_k: usize) -> Result<Vec<SearchResult>> {
+pub fn retrieve_from_chunks(
+    chunks: &[Chunk],
+    query: &str,
+    top_k: usize,
+) -> Result<Vec<SearchResult>> {
     let query_embedding = crate::embedding::embed(query)?;
 
     // Collect texts that pass the size filter, preserving original order for batch embedding
@@ -27,7 +36,8 @@ pub fn retrieve_from_chunks(chunks: &[Chunk], query: &str, top_k: usize) -> Resu
     }
 
     // Batch-embed all valid chunks in a single ONNX inference call
-    let batch_embeddings = crate::embedding::embed_batch(&valid_texts.iter().map(|t| t.as_str()).collect::<Vec<_>>())?;
+    let batch_embeddings =
+        crate::embedding::embed_batch(&valid_texts.iter().map(|t| t.as_str()).collect::<Vec<_>>())?;
 
     // Map results back to (score, chunk) pairs
     let mut scored: Vec<(f32, usize)> = Vec::new();

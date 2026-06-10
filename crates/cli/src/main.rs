@@ -108,7 +108,8 @@ struct DownloadArgs {
     path: Option<String>,
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
@@ -132,19 +133,19 @@ fn main() -> Result<()> {
             }
         }
         Command::Clean(args) => rust_rag_cli::clean_workspace(args.path.as_deref()),
-       Command::Ask(args) => {
+        Command::Ask(args) => {
             let workspace = args.path.as_deref();
             if args.json && args.stream {
-                tokio::runtime::Runtime::new()?.block_on(rust_rag_cli::ask_stream_json(&args.query, workspace))
+                rust_rag_cli::ask_stream_json(&args.query, workspace).await
             } else if args.json {
                 rust_rag_cli::ask_json(&args.query, workspace)
             } else if args.stream {
-                tokio::runtime::Runtime::new()?.block_on(rust_rag_cli::ask_stream(&args.query, workspace))
+                rust_rag_cli::ask_stream(&args.query, workspace).await
             } else {
                 rust_rag_cli::ask(&args.query, workspace)
             }
         }
-       Command::Chat(args) => return rust_rag_tui::run(args.path.as_deref()),
+        Command::Chat(args) => return rust_rag_tui::run(args.path.as_deref()),
         Command::Download(args) => {
             let target = if let Some(path) = args.path {
                 path

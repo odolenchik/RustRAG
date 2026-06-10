@@ -21,10 +21,14 @@ impl SseChunk {
         };
         // Extract delta.content from choices[0].delta.content (OpenAI/Ollama format)
         if let Some(content) = parsed["choices"][0]["delta"]["content"].as_str() {
-            Some(SseChunk { content: content.to_string() })
+            Some(SseChunk {
+                content: content.to_string(),
+            })
         } else if let Some(text_val) = parsed["choices"][0]["text"].as_str() {
             // llama.cpp may return text field directly
-            Some(SseChunk { content: text_val.to_string() })
+            Some(SseChunk {
+                content: text_val.to_string(),
+            })
         } else {
             None
         }
@@ -112,7 +116,9 @@ impl LlmClient {
     pub fn new(base_url: &str, model: &str) -> Self {
         let url = if !base_url.starts_with("http") {
             format!("http://{}/chat/completions", base_url)
-        } else if base_url.ends_with("/chat/completions") || base_url.ends_with("/v1/chat/completions") {
+        } else if base_url.ends_with("/chat/completions")
+            || base_url.ends_with("/v1/chat/completions")
+        {
             // Strip trailing path, keep only origin
             let url = base_url.trim_end_matches('/');
             let slash_pos = url.rfind('/').map(|i| i + 1).unwrap_or(url.len());
@@ -153,21 +159,41 @@ impl LlmClient {
         })();
 
         let endpoint = endpoint.unwrap_or_else(|| "http://localhost:8080".to_string());
-        let model = model.unwrap_or_else(|| "Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-IQ3_M.gguf".to_string());
+        let model = model.unwrap_or_else(|| {
+            "Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-IQ3_M.gguf".to_string()
+        });
 
         LlmClient::new(&endpoint, &model)
+    }
+
+    fn sync_runtime() -> &'static tokio::runtime::Handle {
+        // SAFETY: LazyLock guarantees initialization happens exactly once before first access.
+        // All callers use `.block_on()` which requires a Handle, not the Runtime itself.
+        use std::sync::LazyLock;
+        static RT: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("Failed to create shared Tokio runtime for LLM calls")
+        });
+        RT.handle()
     }
 
     /// Convenience synchronous wrapper — reads config from disk each time.
     pub fn chat(system_prompt: &str, user_message: &str) -> Result<String> {
         let client = LlmClient::default();
-        tokio::runtime::Runtime::new()?.block_on(client.complete(system_prompt, user_message))
+        Self::sync_runtime().block_on(client.complete(system_prompt, user_message))
     }
 
     /// Convenience wrapper that uses explicit endpoint/model (bypasses config).
-    pub fn chat_with(endpoint: &str, model: &str, system_prompt: &str, user_message: &str) -> Result<String> {
+    pub fn chat_with(
+        endpoint: &str,
+        model: &str,
+        system_prompt: &str,
+        user_message: &str,
+    ) -> Result<String> {
         let client = LlmClient::new(endpoint, model);
-        tokio::runtime::Runtime::new()?.block_on(client.complete(system_prompt, user_message))
+        Self::sync_runtime().block_on(client.complete(system_prompt, user_message))
     }
 }
 
@@ -187,7 +213,9 @@ impl ChatBackend for LlmClient {
             "stream": false,
         });
 
-        let response = self.http_client.post(url)
+        let response = self
+            .http_client
+            .post(url)
             .header("Content-Type", "application/json")
             .json(&request)
             .send()
@@ -212,9 +240,7 @@ impl ChatBackend for LlmClient {
         system_prompt: &'a str,
         user_message: &'a str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String>> + Send + 'a>> {
-        Box::pin(async move {
-            self.complete(system_prompt, user_message).await
-        })
+        Box::pin(async move { self.complete(system_prompt, user_message).await })
     }
 
     fn complete_stream_chunks<'a>(

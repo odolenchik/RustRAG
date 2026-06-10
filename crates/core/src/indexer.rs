@@ -42,7 +42,9 @@ pub enum SymbolKind {
 
 impl From<&SymbolKind> for Option<SymbolKind> {
     #[inline]
-    fn from(kind: &SymbolKind) -> Self { Some(kind.clone()) }
+    fn from(kind: &SymbolKind) -> Self {
+        Some(kind.clone())
+    }
 }
 
 impl SymbolKind {
@@ -80,9 +82,13 @@ pub fn apply_overlap(chunks: &mut Vec<Chunk>) {
     }
 
     // Group indices by file path
-    let mut file_indices: std::collections::HashMap<PathBuf, Vec<usize>> = std::collections::HashMap::new();
+    let mut file_indices: std::collections::HashMap<PathBuf, Vec<usize>> =
+        std::collections::HashMap::new();
     for idx in 0..chunks.len() {
-        file_indices.entry(chunks[idx].file_path.clone()).or_default().push(idx);
+        file_indices
+            .entry(chunks[idx].file_path.clone())
+            .or_default()
+            .push(idx);
     }
 
     for (_path, mut indices) in file_indices {
@@ -96,18 +102,28 @@ pub fn apply_overlap(chunks: &mut Vec<Chunk>) {
         let n = indices.len();
 
         // Cache per-file: read once, reuse for all chunks in this file
-        let mut content_cache: std::collections::HashMap<PathBuf, Option<String>> = Default::default();
+        let mut content_cache: std::collections::HashMap<PathBuf, Option<String>> =
+            Default::default();
 
         for i in 0..n {
             let ci = indices[i];
             let file_path = chunks[ci].file_path.clone();
 
             // Read file once per unique path (lazy)
-            content_cache.entry(file_path.clone()).or_insert_with(|| {
-                std::fs::read_to_string(&file_path).ok()
-            });
+            content_cache
+                .entry(file_path.clone())
+                .or_insert_with(|| std::fs::read_to_string(&file_path).ok());
 
-            let Some(content) = &content_cache[&file_path] else { continue; };
+            if let Some(None) = content_cache.get(&file_path) {
+                eprintln!(
+                    "warning: could not read file for overlap expansion: {}",
+                    file_path.display()
+                );
+                continue;
+            }
+            let Some(content) = &content_cache[&file_path] else {
+                continue;
+            };
             let lines: Vec<&str> = content.lines().collect();
             let total_lines = lines.len();
 
@@ -127,11 +143,14 @@ pub fn apply_overlap(chunks: &mut Vec<Chunk>) {
             // byte_offsets[l] = byte offset of the first character of line l.
             // Find l such that byte_offsets[l] <= byte_offset < byte_offsets[l+1].
             let byte_to_line = |byte_offset: usize| -> usize {
-                if byte_offset == 0 { return 0; }
+                if byte_offset == 0 {
+                    return 0;
+                }
                 // partition_point returns the first index where predicate is false.
                 // Since byte_offsets is sorted ascending, this finds the first position
                 // where byte_offsets[pos] > byte_offset, then we subtract 1.
-                byte_offsets.partition_point(|&bo| bo <= byte_offset)
+                byte_offsets
+                    .partition_point(|&bo| bo <= byte_offset)
                     .saturating_sub(1)
             };
 
@@ -188,7 +207,9 @@ pub fn apply_overlap(chunks: &mut Vec<Chunk>) {
                     }
 
                     // Update line_end to reflect the extension
-                    let ext_lines: usize = (cur_end_line..safe_end).filter(|&l| l < total_lines).count();
+                    let ext_lines: usize = (cur_end_line..safe_end)
+                        .filter(|&l| l < total_lines)
+                        .count();
                     if ext_lines > 0 {
                         chunk.line_end += ext_lines;
                     }
@@ -206,10 +227,7 @@ pub fn index_workspace(root: &Path) -> Result<Vec<Chunk>> {
 
     let manifest = root.join("Cargo.toml");
     if !manifest.exists() {
-        return Err(anyhow::anyhow!(
-            "No Cargo.toml found at {}",
-            root.display()
-        ));
+        return Err(anyhow::anyhow!("No Cargo.toml found at {}", root.display()));
     }
 
     let cargo_content = std::fs::read_to_string(&manifest)?;
@@ -296,7 +314,8 @@ fn extract_nodes(
 ) {
     match node.kind() {
         "function_item" => {
-            let name = node.child_by_field_name("name")
+            let name = node
+                .child_by_field_name("name")
                 .map(|n| n.utf8_text(content.as_bytes()).unwrap_or("<anon>"))
                 .unwrap_or("<anon>")
                 .to_string();
@@ -311,7 +330,8 @@ fn extract_nodes(
             });
         }
         "impl_item" => {
-            let self_ty = node.child_by_field_name("self_type")
+            let self_ty = node
+                .child_by_field_name("self_type")
                 .map(|n| n.utf8_text(content.as_bytes()).unwrap_or("<unknown>"))
                 .unwrap_or("<unknown>")
                 .to_string();
@@ -336,7 +356,8 @@ fn extract_nodes(
             });
         }
         "mod_item" => {
-            let name = node.child_by_field_name("name")
+            let name = node
+                .child_by_field_name("name")
                 .map(|n| n.utf8_text(content.as_bytes()).unwrap_or("<anon>"))
                 .unwrap_or("<anon>")
                 .to_string();

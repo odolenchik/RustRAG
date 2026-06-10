@@ -2,15 +2,18 @@ pub mod cmd;
 
 use anyhow::Result;
 use futures_util::StreamExt;
-use rust_rag_llm::ChatBackend;
 use rust_rag_core::{state, vector_store};
+use rust_rag_llm::ChatBackend;
 use std::collections::HashMap;
 use std::io::Write as _;
 use std::path::Path;
 
 /// Run the retrieval pipeline: embed query → hybrid search → build context string.
 /// Also prints result headers to stdout (for `ask` and `ask_stream`).
-pub fn run_retrieval_pipeline(query: &str, workspace_root: Option<&str>) -> Result<(Vec<vector_store::SearchResult>, String)> {
+pub fn run_retrieval_pipeline(
+    query: &str,
+    workspace_root: Option<&str>,
+) -> Result<(Vec<vector_store::SearchResult>, String)> {
     let ws = if let Some(path) = workspace_root {
         std::path::PathBuf::from(path)
     } else {
@@ -35,8 +38,19 @@ pub fn run_retrieval_pipeline(query: &str, workspace_root: Option<&str>) -> Resu
     // Build context from hybrid search results (print headers for non-JSON modes)
     let mut context_parts: Vec<String> = Vec::new();
     for (i, r) in results.iter().enumerate() {
-        println!("Result {}: hybrid_score={:.3} | {}:{}", i + 1, r.score as f64, r.file_path.display(), r.line_start);
-        context_parts.push(format!("[[{}:{}]]\n{}", r.file_path.display(), r.line_start, r.text));
+        println!(
+            "Result {}: hybrid_score={:.3} | {}:{}",
+            i + 1,
+            r.score as f64,
+            r.file_path.display(),
+            r.line_start
+        );
+        context_parts.push(format!(
+            "[[{}:{}]]\n{}",
+            r.file_path.display(),
+            r.line_start,
+            r.text
+        ));
     }
 
     let context_text = if context_parts.is_empty() {
@@ -47,7 +61,6 @@ pub fn run_retrieval_pipeline(query: &str, workspace_root: Option<&str>) -> Resu
 
     Ok((results, context_text))
 }
-
 
 /// Run the index pipeline on a workspace directory with incremental updates.
 pub fn index_workspace(path: &str) -> Result<()> {
@@ -129,7 +142,11 @@ pub fn index_workspace(path: &str) -> Result<()> {
         .collect();
 
     if !uncached_indices.is_empty() {
-        println!("  {} already cached, embedding {} new chunks...", hit_count, uncached_indices.len());
+        println!(
+            "  {} already cached, embedding {} new chunks...",
+            hit_count,
+            uncached_indices.len()
+        );
         let uncached_texts: Vec<&str> = uncached_indices.iter().map(|&i| texts[i]).collect();
         let new_embeddings = rust_rag_core::embedding::embed_batch(&uncached_texts)?;
         for (j, idx) in uncached_indices.into_iter().enumerate() {
@@ -138,12 +155,23 @@ pub fn index_workspace(path: &str) -> Result<()> {
     }
 
     // Persist cache.
-    let _ = embed_cache.write_back(&texts, &all_embeddings.iter().filter_map(|e| Some(e.clone())).collect::<Vec<_>>(), &mut 0);
+    let _ = embed_cache.write_back(
+        &texts,
+        &all_embeddings
+            .iter()
+            .filter_map(|e| Some(e.clone()))
+            .collect::<Vec<_>>(),
+        &mut 0,
+    );
 
     // Step 6: Build documents and remove stale entries from index.
     let mut new_documents = Vec::new();
     for (i, chunk) in all_chunks.iter().enumerate() {
-        let doc_id = format!("chunk_{}_{}", chunk.file_path.to_string_lossy(), chunk.line_start);
+        let doc_id = format!(
+            "chunk_{}_{}",
+            chunk.file_path.to_string_lossy(),
+            chunk.line_start
+        );
         new_documents.push(vector_store::Document {
             id: doc_id.clone(),
             chunk: chunk.clone(),
@@ -159,7 +187,9 @@ pub fn index_workspace(path: &str) -> Result<()> {
 
     // For changed files, the old chunk IDs need to be replaced.
     for p in &changed_files {
-        let ids: Vec<String> = saved_state.chunk_ids.iter()
+        let ids: Vec<String> = saved_state
+            .chunk_ids
+            .iter()
             .filter(|id| id.starts_with(&format!("chunk_{}_", p.display())))
             .cloned()
             .collect();
@@ -170,7 +200,10 @@ pub fn index_workspace(path: &str) -> Result<()> {
     stale_ids.extend(removed_chunk_ids);
 
     if !stale_ids.is_empty() {
-        println!("Removing {} stale document(s) from index...", stale_ids.len());
+        println!(
+            "Removing {} stale document(s) from index...",
+            stale_ids.len()
+        );
         store.remove_documents(&stale_ids)?;
     } else if new_files.is_empty() && changed_files.is_empty() {
         println!("No changes detected. Index is up to date.");
@@ -221,13 +254,20 @@ fn collect_file_hashes(root: &Path) -> Result<HashMap<std::path::PathBuf, String
 }
 
 fn collect_rs_hashes(dir: &Path, files: &mut HashMap<std::path::PathBuf, String>) -> Result<()> {
-    for entry in walkdir::WalkDir::new(dir).min_depth(1).max_depth(5).into_iter().filter_map(|e| e.ok()) {
+    for entry in walkdir::WalkDir::new(dir)
+        .min_depth(1)
+        .max_depth(5)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
         let path = entry.path();
         if !path.is_file() || path.extension() != Some("rs".as_ref()) {
             continue;
         }
         match state::IndexState::compute_file_hash(path) {
-            Ok(hash) => { files.insert(path.to_path_buf(), hash); }
+            Ok(hash) => {
+                files.insert(path.to_path_buf(), hash);
+            }
             Err(_) => {} // skip unreadable files
         }
     }
@@ -262,13 +302,16 @@ pub async fn ask_stream(query: &str, workspace_root: Option<&str>) -> Result<()>
     while let Some(chunk) = stream.next().await {
         match chunk {
             Ok(text) => print!("{}", text),
-            Err(e) => { println!("\nError: {}", e); break; }
+            Err(e) => {
+                println!("\nError: {}", e);
+                break;
+            }
         }
         std::io::stdout().lock().flush()?;
     }
     println!();
 
-     let _ = results;
+    let _ = results;
 
     Ok(())
 }
@@ -324,7 +367,10 @@ pub async fn ask_stream_json(query: &str, workspace_root: Option<&str>) -> Resul
     while let Some(chunk) = stream.next().await {
         match chunk {
             Ok(text) => collected.push_str(&text),
-            Err(e) => { eprintln!("Error: {}", e); break; }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                break;
+            }
         }
     }
 
@@ -379,7 +425,10 @@ pub fn show_info(workspace_path: Option<&str>) -> Result<()> {
 
     let store_path = ws.join(".rustrag");
     if !store_path.exists() {
-        println!("No index found at {}. Run `rust-rag index <path>` first.", store_path.display());
+        println!(
+            "No index found at {}. Run `rust-rag index <path>` first.",
+            store_path.display()
+        );
         return Ok(());
     }
 
@@ -419,7 +468,10 @@ pub fn show_info_json(workspace_path: Option<&str>) -> Result<()> {
 
     let store_path = ws.join(".rustrag");
     if !store_path.exists() {
-        println!("No index found at {}. Run `rust-rag index <path>` first.", store_path.display());
+        println!(
+            "No index found at {}. Run `rust-rag index <path>` first.",
+            store_path.display()
+        );
         return Ok(());
     }
 
@@ -479,7 +531,6 @@ pub fn clean_workspace(workspace_path: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-
 /// Search for a symbol by name in the indexed workspace.
 pub fn search_symbol(query: &str, workspace_root: Option<&str>) -> Result<()> {
     let ws = if let Some(path) = workspace_root {
@@ -508,9 +559,7 @@ pub fn search_symbol(query: &str, workspace_root: Option<&str>) -> Result<()> {
         let module_name = doc["module_name"].as_str().unwrap_or("");
         let text = doc["text"].as_str().unwrap_or("");
 
-        if module_name.to_lowercase().contains(&query.to_lowercase())
-            || text.contains(query)
-        {
+        if module_name.to_lowercase().contains(&query.to_lowercase()) || text.contains(query) {
             matches.push(doc);
         }
     }
@@ -519,7 +568,12 @@ pub fn search_symbol(query: &str, workspace_root: Option<&str>) -> Result<()> {
     let mut seen_ids: std::collections::HashSet<String> = Default::default();
     matches.retain(|doc| {
         let id = doc["id"].as_str().unwrap_or("").to_string();
-        if seen_ids.contains(&id) { false } else { seen_ids.insert(id); true }
+        if seen_ids.contains(&id) {
+            false
+        } else {
+            seen_ids.insert(id);
+            true
+        }
     });
 
     if matches.is_empty() {
@@ -528,17 +582,23 @@ pub fn search_symbol(query: &str, workspace_root: Option<&str>) -> Result<()> {
     }
 
     // Sort by file path for consistent output
-    matches.sort_by(|a, b| a["file_path"]
-        .as_str()
-        .unwrap_or("")
-        .cmp(&b["file_path"].as_str().unwrap_or("")));
+    matches.sort_by(|a, b| {
+        a["file_path"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(&b["file_path"].as_str().unwrap_or(""))
+    });
 
     println!("Found {} result(s) for '{}':\n", matches.len(), query);
     for (i, doc) in matches.iter().enumerate() {
         let module_name = doc["module_name"].as_str().unwrap_or("<unknown>");
-        let symbol_kind = doc.get("symbol_kind").and_then(|v| v.as_str()).unwrap_or("?");
+        let symbol_kind = doc
+            .get("symbol_kind")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?");
 
-        println!("{}: {} [{}] — {}:{}",
+        println!(
+            "{}: {} [{}] — {}:{}",
             i + 1,
             module_name,
             symbol_kind,
@@ -578,9 +638,7 @@ pub fn search_symbol_json(query: &str, workspace_root: Option<&str>) -> Result<(
         let module_name = doc["module_name"].as_str().unwrap_or("");
         let text = doc["text"].as_str().unwrap_or("");
 
-        if module_name.to_lowercase().contains(&query.to_lowercase())
-            || text.contains(query)
-        {
+        if module_name.to_lowercase().contains(&query.to_lowercase()) || text.contains(query) {
             matches.push(doc);
         }
     }
@@ -589,14 +647,21 @@ pub fn search_symbol_json(query: &str, workspace_root: Option<&str>) -> Result<(
     let mut seen_ids: std::collections::HashSet<String> = Default::default();
     matches.retain(|doc| {
         let id = doc["id"].as_str().unwrap_or("").to_string();
-        if seen_ids.contains(&id) { false } else { seen_ids.insert(id); true }
+        if seen_ids.contains(&id) {
+            false
+        } else {
+            seen_ids.insert(id);
+            true
+        }
     });
 
     // Sort by file path for consistent output
-    matches.sort_by(|a, b| a["file_path"]
-        .as_str()
-        .unwrap_or("")
-        .cmp(&b["file_path"].as_str().unwrap_or("")));
+    matches.sort_by(|a, b| {
+        a["file_path"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(&b["file_path"].as_str().unwrap_or(""))
+    });
 
     let output = serde_json::json!({
         "query": query,

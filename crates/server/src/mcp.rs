@@ -50,7 +50,10 @@ fn err_response(id: Option<Value>, code: i32, message: &str) -> JsonRpcResponse 
     JsonRpcResponse {
         jsonrpc: "2.0".into(),
         result: None,
-        error: Some(JsonRpcError { code, message: message.to_string() }),
+        error: Some(JsonRpcError {
+            code,
+            message: message.to_string(),
+        }),
         id,
     }
 }
@@ -60,7 +63,7 @@ fn err_response(id: Option<Value>, code: i32, message: &str) -> JsonRpcResponse 
 /// Shared state for the MCP server (holds path to vector store).
 pub struct McpState {
     pub store_path: std::path::PathBuf,
-    initialized: bool,
+    initialized: std::sync::atomic::AtomicBool,
 }
 
 impl McpState {
@@ -68,12 +71,12 @@ impl McpState {
         let store_path = workspace_root.join(".rustrag");
         Self {
             store_path: store_path.canonicalize().unwrap_or(store_path),
-            initialized: false,
+            initialized: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
     fn require_initialized(&self) -> Result<()> {
-        if !self.initialized {
+        if !self.initialized.load(std::sync::atomic::Ordering::SeqCst) {
             anyhow::bail!("Not initialized. Call 'initialize' first.");
         }
         Ok(())
@@ -143,7 +146,9 @@ struct ToolCallParams {
 // ---- JSON Schema validation ------------------------------------------------
 
 fn validate_tool_input(schema: &Value, args: &Value) -> Result<(), String> {
-    let props = schema.get("properties").ok_or("Missing properties in schema")?;
+    let props = schema
+        .get("properties")
+        .ok_or("Missing properties in schema")?;
     let required_fields: Vec<&str> = schema
         .get("required")
         .and_then(|r| r.as_array())
@@ -152,7 +157,10 @@ fn validate_tool_input(schema: &Value, args: &Value) -> Result<(), String> {
 
     // Check required fields.
     for field in &required_fields {
-        let has_field = args.as_object().map(|o| o.contains_key(*field)).unwrap_or(false);
+        let has_field = args
+            .as_object()
+            .map(|o| o.contains_key(*field))
+            .unwrap_or(false);
         if !has_field {
             return Err(format!("Missing required field: {}", field));
         }
@@ -171,14 +179,32 @@ fn validate_tool_input(schema: &Value, args: &Value) -> Result<(), String> {
                 if let Some(expected) = expected_type {
                     match expected {
                         "string" => {
-                            if !value.is_string() { return Err(format!("Field '{}' expected string, got {}", key, type_name(value))); }
-                        },
+                            if !value.is_string() {
+                                return Err(format!(
+                                    "Field '{}' expected string, got {}",
+                                    key,
+                                    type_name(value)
+                                ));
+                            }
+                        }
                         "integer" | "number" => {
-                            if !value.is_number() { return Err(format!("Field '{}' expected number, got {}", key, type_name(value))); }
-                        },
+                            if !value.is_number() {
+                                return Err(format!(
+                                    "Field '{}' expected number, got {}",
+                                    key,
+                                    type_name(value)
+                                ));
+                            }
+                        }
                         "boolean" => {
-                            if !value.is_boolean() { return Err(format!("Field '{}' expected boolean, got {}", key, type_name(value))); }
-                        },
+                            if !value.is_boolean() {
+                                return Err(format!(
+                                    "Field '{}' expected boolean, got {}",
+                                    key,
+                                    type_name(value)
+                                ));
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -190,7 +216,19 @@ fn validate_tool_input(schema: &Value, args: &Value) -> Result<(), String> {
 }
 
 fn type_name(v: &Value) -> &'static str {
-    if v.is_string() { "string" } else if v.is_array() { "array" } else if v.is_object() { "object" } else if v.is_boolean() { "boolean" } else if v.is_number() { "number" } else { "unknown" }
+    if v.is_string() {
+        "string"
+    } else if v.is_array() {
+        "array"
+    } else if v.is_object() {
+        "object"
+    } else if v.is_boolean() {
+        "boolean"
+    } else if v.is_number() {
+        "number"
+    } else {
+        "unknown"
+    }
 }
 
 // ---- Tool implementations --------------------------------------------------
@@ -204,8 +242,7 @@ fn rag_search_tool(args: &Value, state: &McpState) -> Result<Value> {
         },
         "required": ["query"]
     });
-    validate_tool_input(&schema, args)
-        .map_err(|e| anyhow::anyhow!("Invalid arguments: {}", e))?;
+    validate_tool_input(&schema, args).map_err(|e| anyhow::anyhow!("Invalid arguments: {}", e))?;
 
     let query: String = args["query"]
         .as_str()
@@ -234,8 +271,7 @@ fn rag_query_tool(args: &Value, state: &McpState) -> Result<Value> {
         },
         "required": ["question"]
     });
-    validate_tool_input(&schema, args)
-        .map_err(|e| anyhow::anyhow!("Invalid arguments: {}", e))?;
+    validate_tool_input(&schema, args).map_err(|e| anyhow::anyhow!("Invalid arguments: {}", e))?;
 
     let question: String = args["question"]
         .as_str()
@@ -249,7 +285,8 @@ fn rag_query_tool(args: &Value, state: &McpState) -> Result<Value> {
     let store = rust_rag_core::vector_store::VectorStore::open(&state.store_path)?;
     let results = store.hybrid_search(&embedding, &question, top_k, 0.7, None)?;
 
-    let context: String = results.iter()
+    let context: String = results
+        .iter()
         .map(|r| format!("[{}:{}]\n{}", r.file_path.display(), r.line_start, r.text))
         .collect::<Vec<_>>()
         .join("\n\n");
@@ -259,13 +296,18 @@ fn rag_query_tool(args: &Value, state: &McpState) -> Result<Value> {
 
     let answer = rust_rag_llm::ollama_client::LlmClient::chat(&system_prompt, &user_message)?;
 
-    let citations: Vec<Value> = results.iter().map(|r| serde_json::json!({
-        "file_path": r.file_path.to_string_lossy(),
-        "line_start": r.line_start,
-        "line_end": r.line_end,
-        "text": r.text,
-        "score": r.score,
-    })).collect();
+    let citations: Vec<Value> = results
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "file_path": r.file_path.to_string_lossy(),
+                "line_start": r.line_start,
+                "line_end": r.line_end,
+                "text": r.text,
+                "score": r.score,
+            })
+        })
+        .collect();
 
     Ok(serde_json::json!({
         "content": format!("Answer:\n{}\n\nCitations:\n{}", answer, serde_json::to_string_pretty(&citations).unwrap_or_default()),
@@ -280,7 +322,11 @@ fn results_to_string(results: &[rust_rag_core::vector_store::SearchResult]) -> S
     for (i, r) in results.iter().enumerate() {
         output.push_str(&format!(
             "[{}] Score: {:.3} | {}:{}\n{}\n",
-            i + 1, r.score, r.file_path.display(), r.line_start, r.text
+            i + 1,
+            r.score,
+            r.file_path.display(),
+            r.line_start,
+            r.text
         ));
     }
     output
@@ -298,7 +344,7 @@ pub fn run_mcp_server(workspace_root: &std::path::Path) -> Result<()> {
         // Read a single line from stdin.
         let mut line = String::new();
         match io::stdin().lock().read_line(&mut line) {
-            Ok(0) => break,   // EOF
+            Ok(0) => break, // EOF
             Ok(_) => {}
             Err(_) => break,
         }
@@ -310,9 +356,9 @@ pub fn run_mcp_server(workspace_root: &std::path::Path) -> Result<()> {
 
         // Parse single request or batch.
         let requests: Vec<JsonRpcRequest> = match serde_json::from_str(&trimmed) {
-            Ok(req) => vec![req],           // single request
+            Ok(req) => vec![req], // single request
             Err(_) => match serde_json::from_str::<Vec<JsonRpcRequest>>(&trimmed) {
-                Ok(batch) => batch,          // batch of requests
+                Ok(batch) => batch, // batch of requests
                 Err(e) => {
                     let resp = err_response(None, -32700, &format!("Parse error: {}", e));
                     writeln!(io::stdout(), "{}", serde_json::to_string(&resp).unwrap()).ok();
@@ -335,7 +381,10 @@ pub fn run_mcp_server(workspace_root: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-fn dispatch_request(req: JsonRpcRequest, state: &std::sync::Arc<std::sync::Mutex<McpState>>) -> Option<JsonRpcResponse> {
+fn dispatch_request(
+    req: JsonRpcRequest,
+    state: &std::sync::Arc<std::sync::Mutex<McpState>>,
+) -> Option<JsonRpcResponse> {
     let method = req.method;
     let params = req.params;
     let id = req.id.clone();
@@ -347,7 +396,11 @@ fn dispatch_request(req: JsonRpcRequest, state: &std::sync::Arc<std::sync::Mutex
         "initialize" => {
             let _params: InitializeParams = serde_json::from_value(params).ok()?;
             if !guard.store_path.join("index.jsonl").exists() {
-                return Some(err_response(id, -32603, "No index found. Run `rust-rag index <path>` first."));
+                return Some(err_response(
+                    id,
+                    -32603,
+                    "No index found. Run `rust-rag index <path>` first.",
+                ));
             }
             Ok(serde_json::json!({
                 "protocolVersion": MCP_VERSION,
@@ -356,8 +409,10 @@ fn dispatch_request(req: JsonRpcRequest, state: &std::sync::Arc<std::sync::Mutex
             }))
         }
         "notifications/initialized" => {
-            drop(guard);
-            state.lock().map(|mut g| g.initialized = true).ok();
+            // Set initialized flag atomically — no need to hold the Mutex for a boolean.
+            guard
+                .initialized
+                .store(true, std::sync::atomic::Ordering::SeqCst);
             Ok(serde_json::json!({}))
         }
         "tools/list" => handle_tools_list(&guard),
