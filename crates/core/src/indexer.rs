@@ -40,6 +40,27 @@ pub enum SymbolKind {
     Macro,
 }
 
+impl From<&SymbolKind> for Option<SymbolKind> {
+    #[inline]
+    fn from(kind: &SymbolKind) -> Self { Some(kind.clone()) }
+}
+
+impl SymbolKind {
+    /// Returns the lowercase string name used in JSONL storage.
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            SymbolKind::Function => "function",
+            SymbolKind::ImplBlock => "implblock",
+            SymbolKind::UnsafeRegion => "unsaferegion",
+            SymbolKind::TraitImpl => "traitimpl",
+            SymbolKind::Module => "module",
+            SymbolKind::Struct => "struct",
+            SymbolKind::Enum => "enum",
+            SymbolKind::Macro => "macro",
+        }
+    }
+}
+
 /// Apply configured overlap to chunks within each file.
 /// Expands boundaries by including adjacent lines from neighboring chunks,
 /// so context at chunk boundaries is preserved for the LLM.

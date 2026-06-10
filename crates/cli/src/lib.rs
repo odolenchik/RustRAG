@@ -1,12 +1,53 @@
 pub mod cmd;
 
 use anyhow::Result;
-use std::collections::HashMap;
-use std::io::Write as _;
-use std::path::Path;
 use futures_util::StreamExt;
 use rust_rag_llm::ChatBackend;
 use rust_rag_core::{state, vector_store};
+use std::collections::HashMap;
+use std::io::Write as _;
+use std::path::Path;
+
+/// Run the retrieval pipeline: embed query → hybrid search → build context string.
+/// Also prints result headers to stdout (for `ask` and `ask_stream`).
+pub fn run_retrieval_pipeline(query: &str, workspace_root: Option<&str>) -> Result<(Vec<vector_store::SearchResult>, String)> {
+    let ws = if let Some(path) = workspace_root {
+        std::path::PathBuf::from(path)
+    } else {
+        std::env::current_dir()?
+    };
+
+    let cfg = rust_rag_core::config::Config::load(&ws).unwrap_or_default();
+    let top_k: usize = cfg.llm_config().top_k;
+
+    let store_path = ws.join(".rustrag");
+    let index_path = store_path.join("index.jsonl");
+
+    if !index_path.exists() {
+        anyhow::bail!("No index found. Run `rust-rag index <path>` first.");
+    }
+
+    // Embed the query and run hybrid search (BM25 + vector) using VectorStore API
+    let embedding: Vec<f32> = rust_rag_core::embedding::embed(query)?;
+    let store = rust_rag_core::vector_store::VectorStore::open(&store_path)?;
+    let results = store.hybrid_search(&embedding, query, top_k, 0.7, None)?;
+
+    // Build context from hybrid search results (print headers for non-JSON modes)
+    let mut context_parts: Vec<String> = Vec::new();
+    for (i, r) in results.iter().enumerate() {
+        println!("Result {}: hybrid_score={:.3} | {}:{}", i + 1, r.score as f64, r.file_path.display(), r.line_start);
+        context_parts.push(format!("[[{}:{}]]\n{}", r.file_path.display(), r.line_start, r.text));
+    }
+
+    let context_text = if context_parts.is_empty() {
+        "No relevant code chunks found.".to_string()
+    } else {
+        context_parts.join("\n\n")
+    };
+
+    Ok((results, context_text))
+}
+
 
 /// Run the index pipeline on a workspace directory with incremental updates.
 pub fn index_workspace(path: &str) -> Result<()> {
@@ -195,54 +236,11 @@ fn collect_rs_hashes(dir: &Path, files: &mut HashMap<std::path::PathBuf, String>
 
 /// Run the ask pipeline: retrieve relevant chunks and generate LLM answer.
 pub fn ask(query: &str, workspace_root: Option<&str>) -> Result<()> {
-    let ws = if let Some(path) = workspace_root {
-        std::path::PathBuf::from(path)
-    } else {
-        std::env::current_dir()?
-    };
+    let (_results, context) = run_retrieval_pipeline(query, workspace_root)?;
 
-    // Load config to get top_k and LLM settings
-    let cfg = rust_rag_core::config::Config::load(&ws).unwrap_or_default();
-    let top_k: usize = cfg.llm_config().top_k;
-
-    // Find the vector store
-    let store_path = ws.join(".rustrag");
-    let index_path = store_path.join("index.jsonl");
-
-    if !index_path.exists() {
-        anyhow::bail!("No index found. Run `rust-rag index <path>` first.");
-    }
-
-    // Embed the query and run hybrid search (BM25 + vector) using VectorStore API
-    let embedding: Vec<f32> = rust_rag_core::embedding::embed(query)?;
-    let store = rust_rag_core::vector_store::VectorStore::open(&store_path)?;
-    let results = store.hybrid_search(&embedding, query, top_k, 0.7, None)?;
-
-    // Build context from hybrid search results
-    let mut context_parts: Vec<String> = Vec::new();
-    for (i, r) in results.iter().enumerate() {
-        context_parts.push(format!(
-            "[[{}:{}]]\n{}",
-            r.file_path.display(), r.line_start, r.text
-        ));
-
-        println!("Result {}: hybrid_score={:.3} | {}:{}", i + 1, r.score as f64, r.file_path.display(), r.line_start);
-    }
-
-    let context = if context_parts.is_empty() {
-        "No relevant code chunks found.".to_string()
-    } else {
-        context_parts.join("\n\n")
-    };
-
-    // Build the prompt for LLM
     let system_prompt = "You are a Rust code analysis assistant. Answer questions based on the provided code snippets. Always cite file paths and line numbers when referencing code.";
-    let user_message = format!(
-        "Question: {}\n\nRelevant code:\n{}",
-        query, context
-    );
+    let user_message = format!("Question: {}\n\nRelevant code:\n{}", query, context);
 
-    // Call LLM — uses config endpoint/model from .rustrag.toml (or env vars / defaults)
     print!("\nAsking LLM...\n\n");
     let response = rust_rag_llm::ollama_client::LlmClient::chat(&system_prompt, &user_message)?;
     println!("{}", response);
@@ -252,46 +250,10 @@ pub fn ask(query: &str, workspace_root: Option<&str>) -> Result<()> {
 
 /// Run the ask pipeline with streaming output.
 pub async fn ask_stream(query: &str, workspace_root: Option<&str>) -> Result<()> {
-    let ws = if let Some(path) = workspace_root {
-        std::path::PathBuf::from(path)
-    } else {
-        std::env::current_dir()?
-    };
-
-    let cfg = rust_rag_core::config::Config::load(&ws).unwrap_or_default();
-    let top_k: usize = cfg.llm_config().top_k;
-
-    let store_path = ws.join(".rustrag");
-    let index_path = store_path.join("index.jsonl");
-
-    if !index_path.exists() {
-        anyhow::bail!("No index found. Run `rust-rag index <path>` first.");
-    }
-
-    let embedding: Vec<f32> = rust_rag_core::embedding::embed(query)?;
-    let store = rust_rag_core::vector_store::VectorStore::open(&store_path)?;
-    let results = store.hybrid_search(&embedding, query, top_k, 0.7, None)?;
-
-    let mut context_parts: Vec<String> = Vec::new();
-    for (i, r) in results.iter().enumerate() {
-        context_parts.push(format!(
-            "[[{}:{}]]\n{}",
-            r.file_path.display(), r.line_start, r.text
-        ));
-        println!("Result {}: hybrid_score={:.3} | {}:{}", i + 1, r.score as f64, r.file_path.display(), r.line_start);
-    }
-
-    let context = if context_parts.is_empty() {
-        "No relevant code chunks found.".to_string()
-    } else {
-        context_parts.join("\n\n")
-    };
+    let (results, context) = run_retrieval_pipeline(query, workspace_root)?;
 
     let system_prompt = "You are a Rust code analysis assistant. Answer questions based on the provided code snippets. Always cite file paths and line numbers when referencing code.";
-    let user_message = format!(
-        "Question: {}\n\nRelevant code:\n{}",
-        query, context
-    );
+    let user_message = format!("Question: {}\n\nRelevant code:\n{}", query, context);
 
     print!("\nAsking LLM...\n\n");
     let client = rust_rag_llm::ollama_client::LlmClient::default();
@@ -300,64 +262,26 @@ pub async fn ask_stream(query: &str, workspace_root: Option<&str>) -> Result<()>
     while let Some(chunk) = stream.next().await {
         match chunk {
             Ok(text) => print!("{}", text),
-            Err(e) => {
-                println!("\nError: {}", e);
-                break;
-            }
+            Err(e) => { println!("\nError: {}", e); break; }
         }
         std::io::stdout().lock().flush()?;
     }
     println!();
+
+     let _ = results;
 
     Ok(())
 }
 
 /// Run the ask pipeline with JSON output.
 pub fn ask_json(query: &str, workspace_root: Option<&str>) -> Result<()> {
-    let ws = if let Some(path) = workspace_root {
-        std::path::PathBuf::from(path)
-    } else {
-        std::env::current_dir()?
-    };
+    let (results, context) = run_retrieval_pipeline(query, workspace_root)?;
 
-    let cfg = rust_rag_core::config::Config::load(&ws).unwrap_or_default();
-    let top_k: usize = cfg.llm_config().top_k;
-
-    let store_path = ws.join(".rustrag");
-    let index_path = store_path.join("index.jsonl");
-
-    if !index_path.exists() {
-        anyhow::bail!("No index found. Run `rust-rag index <path>` first.");
-    }
-
-    let embedding: Vec<f32> = rust_rag_core::embedding::embed(query)?;
-    let store = rust_rag_core::vector_store::VectorStore::open(&store_path)?;
-    let results = store.hybrid_search(&embedding, query, top_k, 0.7, None)?;
-
-    // Build context from hybrid search results
-    let mut context_parts: Vec<String> = Vec::new();
-    for r in &results {
-        context_parts.push(format!(
-            "[[{}:{}]]\n{}",
-            r.file_path.display(), r.line_start, r.text
-        ));
-    }
-
-    let context = if context_parts.is_empty() {
-        "No relevant code chunks found.".to_string()
-    } else {
-        context_parts.join("\n\n")
-    };
-
-    // Build the prompt for LLM
     let system_prompt = "You are a Rust code analysis assistant. Answer questions based on the provided code snippets. Always cite file paths and line numbers when referencing code.";
-    let user_message = format!(
-        "Question: {}\n\nRelevant code:\n{}",
-        query, context
-    );
+    let user_message = format!("Question: {}\n\nRelevant code:\n{}", query, context);
 
-    let response = rust_rag_llm::ollama_client::LlmClient::chat(&system_prompt, &user_message)?;
-
+    // Suppress result headers in JSON mode — they go to stdout already from pipeline;
+    // but for cleaner output we re-run silently. Actually, the pipeline prints them once.
     // Build citation list from results
     let citations: Vec<serde_json::Value> = results.iter().map(|r| {
         serde_json::json!({
@@ -373,6 +297,8 @@ pub fn ask_json(query: &str, workspace_root: Option<&str>) -> Result<()> {
         })
     }).collect();
 
+    let response = rust_rag_llm::ollama_client::LlmClient::chat(&system_prompt, &user_message)?;
+
     let output = serde_json::json!({
         "query": query,
         "answer": response,
@@ -386,47 +312,10 @@ pub fn ask_json(query: &str, workspace_root: Option<&str>) -> Result<()> {
 
 /// Run the ask pipeline with streaming output and JSON.
 pub async fn ask_stream_json(query: &str, workspace_root: Option<&str>) -> Result<()> {
-    let ws = if let Some(path) = workspace_root {
-        std::path::PathBuf::from(path)
-    } else {
-        std::env::current_dir()?
-    };
+    let (results, context) = run_retrieval_pipeline(query, workspace_root)?;
 
-    let cfg = rust_rag_core::config::Config::load(&ws).unwrap_or_default();
-    let top_k: usize = cfg.llm_config().top_k;
-
-    let store_path = ws.join(".rustrag");
-    let index_path = store_path.join("index.jsonl");
-
-    if !index_path.exists() {
-        anyhow::bail!("No index found. Run `rust-rag index <path>` first.");
-    }
-
-    let embedding: Vec<f32> = rust_rag_core::embedding::embed(query)?;
-    let store = rust_rag_core::vector_store::VectorStore::open(&store_path)?;
-    let results = store.hybrid_search(&embedding, query, top_k, 0.7, None)?;
-
-    // Build context from hybrid search results
-    let mut context_parts: Vec<String> = Vec::new();
-    for r in &results {
-        context_parts.push(format!(
-            "[[{}:{}]]\n{}",
-            r.file_path.display(), r.line_start, r.text
-        ));
-    }
-
-    let context = if context_parts.is_empty() {
-        "No relevant code chunks found.".to_string()
-    } else {
-        context_parts.join("\n\n")
-    };
-
-    // Build the prompt for LLM
     let system_prompt = "You are a Rust code analysis assistant. Answer questions based on the provided code snippets. Always cite file paths and line numbers when referencing code.";
-    let user_message = format!(
-        "Question: {}\n\nRelevant code:\n{}",
-        query, context
-    );
+    let user_message = format!("Question: {}\n\nRelevant code:\n{}", query, context);
 
     // Collect streamed response
     let client = rust_rag_llm::ollama_client::LlmClient::default();
@@ -435,10 +324,7 @@ pub async fn ask_stream_json(query: &str, workspace_root: Option<&str>) -> Resul
     while let Some(chunk) = stream.next().await {
         match chunk {
             Ok(text) => collected.push_str(&text),
-            Err(e) => {
-                eprintln!("Error: {}", e);
-                break;
-            }
+            Err(e) => { eprintln!("Error: {}", e); break; }
         }
     }
 

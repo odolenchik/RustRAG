@@ -275,8 +275,19 @@ impl VectorStore {
                 line_start: doc["line_start"].as_u64().unwrap_or(0) as usize,
                 line_end: doc["line_end"].as_u64().unwrap_or(0) as usize,
                 module_name: doc["module_name"].as_str().unwrap_or("").to_string(),
-                symbol_kind: serde_json::from_value(doc["symbol_kind"].clone()).ok()
-                    .map(|v: SymbolKindWrapper| v.0),
+                symbol_kind: doc["symbol_kind"].as_str().map(|s| {
+                    match s.to_lowercase().as_str() {
+                        "function" => SymbolKind::Function,
+                        "implblock" => SymbolKind::ImplBlock,
+                        "unsaferegion" => SymbolKind::UnsafeRegion,
+                        "traitimpl" => SymbolKind::TraitImpl,
+                        "module" => SymbolKind::Module,
+                        "struct" => SymbolKind::Struct,
+                        "enum" => SymbolKind::Enum,
+                        "macro" => SymbolKind::Macro,
+                        _ => panic!("Unknown SymbolKind in index: {}", s),
+                    }
+                }),
                 text: doc["text"].as_str().unwrap_or("").to_string(),
                 score: vec_sim,
             });
@@ -399,7 +410,7 @@ impl SearchFilters {
         }
         if let Some(kind) = &self.symbol_kind {
             let stored = doc.get("symbol_kind").and_then(|v| v.as_str());
-            if stored.map(|s| s.to_lowercase()) != Some(kind.symbol_name().to_lowercase()) {
+            if stored.map(|s| s.to_lowercase()) != Some(kind.as_str().to_lowercase()) {
                 return false;
             }
         }
@@ -408,10 +419,12 @@ impl SearchFilters {
 }
 
 // ---------------------------------------------------------------------------
-// SearchResult & SymbolKind
+// SearchResult & SymbolKind (re-exported from indexer)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+pub use crate::indexer::SymbolKind;
+
+#[derive(Debug, Clone, Serialize)]
 pub struct SearchResult {
     pub id: String,
     pub file_path: PathBuf,
@@ -423,37 +436,49 @@ pub struct SearchResult {
     pub score: f32,
 }
 
-/// Symbol kind for deserialization from JSON (stored as strings).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SymbolKind {
-    Function,
-    ImplBlock,
-    UnsafeRegion,
-    TraitImpl,
-    Module,
-    Struct,
-    Enum,
-    Macro,
-}
-
-impl SymbolKind {
-    fn symbol_name(&self) -> &'static str {
-        match self {
-            SymbolKind::Function => "Function",
-            SymbolKind::ImplBlock => "ImplBlock",
-            SymbolKind::UnsafeRegion => "UnsafeRegion",
-            SymbolKind::TraitImpl => "TraitImpl",
-            SymbolKind::Module => "Module",
-            SymbolKind::Struct => "Struct",
-            SymbolKind::Enum => "Enum",
-            SymbolKind::Macro => "Macro",
+// Manual Deserialize impl for SearchResult to use the custom SymbolKind deserializer.
+impl<'de> Deserialize<'de> for SearchResult {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct SearchResultHelper {
+            id: String,
+            file_path: PathBuf,
+            line_start: usize,
+            line_end: usize,
+            module_name: String,
+            symbol_kind: Option<String>,
+            text: String,
+            score: f32,
         }
+
+        let helper = SearchResultHelper::deserialize(deserializer)?;
+        Ok(SearchResult {
+            id: helper.id,
+            file_path: helper.file_path,
+            line_start: helper.line_start,
+            line_end: helper.line_end,
+            module_name: helper.module_name,
+            symbol_kind: helper.symbol_kind.map(|s| {
+                match s.to_lowercase().as_str() {
+                    "function" => SymbolKind::Function,
+                    "implblock" => SymbolKind::ImplBlock,
+                    "unsaferegion" => SymbolKind::UnsafeRegion,
+                    "traitimpl" => SymbolKind::TraitImpl,
+                    "module" => SymbolKind::Module,
+                    "struct" => SymbolKind::Struct,
+                    "enum" => SymbolKind::Enum,
+                    "macro" => SymbolKind::Macro,
+                    other => panic!("Unknown SymbolKind in index: {}", other),
+                }
+            }),
+            text: helper.text,
+            score: helper.score,
+        })
     }
 }
-
-// Wrapper for serde round-trip
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct SymbolKindWrapper(pub SymbolKind);
 
 /// Compute cosine similarity between two vectors. Returns a value in [-1, 1].
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {

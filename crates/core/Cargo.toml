@@ -13,13 +13,10 @@ toml = "0.8"
 walkdir = "2"
 tree-sitter = "0.25"
 tree-sitter-rust = "0.24"
-lsp-server = "0.7"
 petgraph = "0.6"
 ra_ap_syntax = "=0.0.178"
 reqwest = { version = "0.12", features = ["blocking", "stream", "rustls-tls"] }
 fastembed = { version = "=4.0.0", default-features = false, features = ["ort-download-binaries"] }
-uuid = { version = "1", features = ["v4"] }
-chrono = "0.4"
 dirs = "5"
 sha2 = "0.10"
 

@@ -1,4 +1,5 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
+use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
@@ -169,12 +170,21 @@ pub struct EmbedCache {
 
 impl EmbedCache {
     /// Current model identifier used to invalidate stale caches.
-    /// Changes when the underlying ONNX model changes (different weights, dimensions).
+    /// SHA-256 hash of the ONNX model binary — changes automatically when weights change.
     fn model_id() -> String {
-        // Use a simple hash of the embedding dimension as a proxy for "model identity".
-        // Different models produce different vector sizes, so this catches most changes.
-        // For a more robust solution, store a model version string in config.
-        format!("bge-small-en-v1.5")
+        let dir = model_dir();
+        let onnx_path = dir.join("model.onnx");
+
+        if !onnx_path.exists() {
+            // Fallback: use a placeholder so stale caches are simply invalidated
+            return "no-model-found".to_string();
+        }
+
+        let mut hasher = Sha256::new();
+        if let Ok(bytes) = std::fs::read(&onnx_path) {
+            hasher.update(&bytes);
+        }
+        format!("{:x}", hasher.finalize())
     }
 
     /// Open the embed cache for a workspace's `.rustrag` directory.

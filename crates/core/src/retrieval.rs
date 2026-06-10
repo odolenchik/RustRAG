@@ -49,16 +49,7 @@ pub fn retrieve_from_chunks(chunks: &[Chunk], query: &str, top_k: usize) -> Resu
                 line_start: chunk.line_start,
                 line_end: chunk.line_end,
                 module_name: chunk.module_name.clone(),
-                symbol_kind: match &chunk.symbol_kind {
-                    crate::indexer::SymbolKind::Function => Some(crate::vector_store::SymbolKind::Function),
-                    crate::indexer::SymbolKind::ImplBlock => Some(crate::vector_store::SymbolKind::ImplBlock),
-                    crate::indexer::SymbolKind::UnsafeRegion => Some(crate::vector_store::SymbolKind::UnsafeRegion),
-                    crate::indexer::SymbolKind::TraitImpl => Some(crate::vector_store::SymbolKind::TraitImpl),
-                    crate::indexer::SymbolKind::Module => Some(crate::vector_store::SymbolKind::Module),
-                    crate::indexer::SymbolKind::Struct => Some(crate::vector_store::SymbolKind::Struct),
-                    crate::indexer::SymbolKind::Enum => Some(crate::vector_store::SymbolKind::Enum),
-                    crate::indexer::SymbolKind::Macro => Some(crate::vector_store::SymbolKind::Macro),
-                },
+                symbol_kind: (&chunk.symbol_kind).into(),
                 text: chunk.text.clone(),
                 score,
             }

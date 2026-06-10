@@ -568,14 +568,14 @@ fn test_search_filters_by_symbol_kind() {
     // Search only Function symbols
     let filters = rust_rag_core::vector_store::SearchFilters {
         file_extension: None,
-        symbol_kind: Some(rust_rag_core::vector_store::SymbolKind::Function),
+        symbol_kind: Some(rust_rag_core::indexer::SymbolKind::Function),
     };
     let results = store.hybrid_search(&query_vec, "embedding", 5, 0.7, Some(&filters))
         .expect("should search");
 
     // All results should be Function kind
     for result in &results {
-        assert_eq!(result.symbol_kind, Some(rust_rag_core::vector_store::SymbolKind::Function),
+        assert_eq!(result.symbol_kind, Some(rust_rag_core::indexer::SymbolKind::Function),
             "All results should match the Function filter");
     }
 }
@@ -681,7 +681,7 @@ fn test_hybrid_search_filters_exclude_documents() {
     // With filter for ImplBlock — none of our test docs are ImplBlock
     let filters = rust_rag_core::vector_store::SearchFilters {
         file_extension: None,
-        symbol_kind: Some(rust_rag_core::vector_store::SymbolKind::ImplBlock),
+        symbol_kind: Some(rust_rag_core::indexer::SymbolKind::ImplBlock),
     };
     let results_filtered = store.hybrid_search(&query_vec, "test", 5, 0.7, Some(&filters)).expect("should search");
 
