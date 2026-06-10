@@ -20,7 +20,7 @@
 | 4 | Архитектура (system prompt константа) | Дёргается из 7+ мест. Если менять потом — нужно править все места. Лучше сделать сейчас, пока они свежи в голове. Не ломает функциональность. |
 | 5 | Core performance (BM25 кэш + Document struct) | Самый опасный шаг: меняет внутреннюю структуру `vector_store.rs`. Нужно делать после CI и после того, как system prompt константа уже вынесена (иначе конфликт). |
 | 6 | CLI рефакторинг | Дублирование в `cli/lib.rs` — легко ломается если core API изменился. После шага 5 API стабильный. |
-| 7 | Security (path traversal, rate limiting) | Зависит от стабильного core + CLI. Добавляет middleware в server. |
+| 7 | Security (path traversal, rate limiting) | Объединено с фазой 6: path canonicalization + rate limiting. Зависит от стабильного core + CLI. Добавляет middleware в server. |
 | 8 | TUI рефакторинг | Самый изолированный шаг. TUI — отдельный crate с минимальными зависимостями на API. |
 
 ---
@@ -503,7 +503,7 @@ cargo test -p rust-rag-core
 
 ---
 
-## Фаза 6: Server security — rate limiting + path canonicalization (1 день)
+## Фаза 6: Server security — rate limiting + path canonicalization (1 день) ✅
 
 **Цель:** Закрыть MEDIUM уязвимости сервера и CLI.  
 **Зависимости:** Фазы 3–5 стабильны. CI работает.  
@@ -698,7 +698,7 @@ pub fn hybrid_search(...) -> Result<Vec<SearchResult>> { ... }
 | 3. System prompt константа | 0.5 | Фаза 1 | Очень низкий | 7+ дубликатов строки → 1 константа |
 | 4. CLI рефакторинг | 1–2 | Фазы 1, 3 | Средний | DRY violation в cli/lib.rs (681 строка) |
 | 5. BM25 кэш + Document struct | 1–2 | Фазы 1–4 | Высокий | Критические performance bottleneck'и |
-| 6. Server security | 1 | Фазы 1–4 | Низкий | Rate limiting, path traversal |
+| 6. Server security + CLI canonicalization | 1 | Фазы 1–5 | Низкий | ✅ Token-bucket rate limiter (Semaphore), path canonicalization via `fs::canonicalize`, configurable `--rate-limit` flag |
 | 7. TUI рефакторинг | 2–3 | Все предыдущие | Средний | Монолитный App struct (508 строк) |
 | 8. Полировка | 1–2 | Все предыдущие | Низкий | Документация, cmd/*.rs, CHANGELOG |
 
