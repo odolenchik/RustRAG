@@ -357,42 +357,42 @@ impl VectorStore {
                 }
             }
 
-                let doc_id_for_err = doc["id"].as_str().unwrap_or("").to_string();
-                let file_path_for_err = doc["file_path"].as_str().unwrap_or("").to_string();
+            let doc_id_for_err = doc["id"].as_str().unwrap_or("").to_string();
+            let file_path_for_err = doc["file_path"].as_str().unwrap_or("").to_string();
 
-                let symbol_kind = match doc["symbol_kind"].as_str() {
-                    Some(s) => {
-                        let kind = match s.to_lowercase().as_str() {
-                            "function" => SymbolKind::Function,
-                            "implblock" => SymbolKind::ImplBlock,
-                            "unsaferegion" => SymbolKind::UnsafeRegion,
-                            "traitimpl" => SymbolKind::TraitImpl,
-                            "module" => SymbolKind::Module,
-                            "struct" => SymbolKind::Struct,
-                            "enum" => SymbolKind::Enum,
-                            "macro" => SymbolKind::Macro,
-                            _ => anyhow::bail!(
-                                "Unknown SymbolKind in index: {} (doc id: {}, file: {})",
-                                s,
-                                doc_id_for_err,
-                                file_path_for_err
-                            ),
-                        };
-                        Some(kind)
-                    }
-                    None => None,
-                };
+            let symbol_kind = match doc["symbol_kind"].as_str() {
+                Some(s) => {
+                    let kind = match s.to_lowercase().as_str() {
+                        "function" => SymbolKind::Function,
+                        "implblock" => SymbolKind::ImplBlock,
+                        "unsaferegion" => SymbolKind::UnsafeRegion,
+                        "traitimpl" => SymbolKind::TraitImpl,
+                        "module" => SymbolKind::Module,
+                        "struct" => SymbolKind::Struct,
+                        "enum" => SymbolKind::Enum,
+                        "macro" => SymbolKind::Macro,
+                        _ => anyhow::bail!(
+                            "Unknown SymbolKind in index: {} (doc id: {}, file: {})",
+                            s,
+                            doc_id_for_err,
+                            file_path_for_err
+                        ),
+                    };
+                    Some(kind)
+                }
+                None => None,
+            };
 
-                results.push(SearchResult {
-                    id: doc["id"].as_str().unwrap_or("").to_string(),
-                    file_path: PathBuf::from(doc["file_path"].as_str().unwrap_or("")),
-                    line_start: doc["line_start"].as_u64().unwrap_or(0) as usize,
-                    line_end: doc["line_end"].as_u64().unwrap_or(0) as usize,
-                    module_name: doc["module_name"].as_str().unwrap_or("").to_string(),
-                    symbol_kind,
-                    text: doc["text"].as_str().unwrap_or("").to_string(),
-                    score: vec_sim,
-                });
+            results.push(SearchResult {
+                id: doc["id"].as_str().unwrap_or("").to_string(),
+                file_path: PathBuf::from(doc["file_path"].as_str().unwrap_or("")),
+                line_start: doc["line_start"].as_u64().unwrap_or(0) as usize,
+                line_end: doc["line_end"].as_u64().unwrap_or(0) as usize,
+                module_name: doc["module_name"].as_str().unwrap_or("").to_string(),
+                symbol_kind,
+                text: doc["text"].as_str().unwrap_or("").to_string(),
+                score: vec_sim,
+            });
         }
 
         Ok(results)

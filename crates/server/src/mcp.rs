@@ -67,8 +67,6 @@ pub struct McpState {
     initialized: std::sync::atomic::AtomicBool,
 }
 
-
-
 impl McpState {
     fn new(workspace_root: &std::path::Path) -> Self {
         let store_path = workspace_root.join(".rustrag");

@@ -126,7 +126,12 @@ fn validate_query_length(value: &str, field_name: &str) -> Result<(), (StatusCod
     if value.len() > MAX_QUERY_LENGTH {
         return Err((
             StatusCode::BAD_REQUEST,
-            format!("Field '{}' exceeds maximum length of {} characters (got {})", field_name, MAX_QUERY_LENGTH, value.len()),
+            format!(
+                "Field '{}' exceeds maximum length of {} characters (got {})",
+                field_name,
+                MAX_QUERY_LENGTH,
+                value.len()
+            ),
         ));
     }
     Ok(())
@@ -209,28 +214,56 @@ async fn search_handler(
 ) -> impl axum::response::IntoResponse {
     // Enforce Bearer token auth when API key is configured
     if let Some(unauth_status) = enforce_auth(&headers, &state.api_key, "/search") {
-        return (unauth_status, serde_json::to_string(&serde_json::json!({"error": "Unauthorized"})).unwrap());
+        return (
+            unauth_status,
+            serde_json::to_string(&serde_json::json!({"error": "Unauthorized"})).unwrap(),
+        );
     }
 
     if state.rate_limiter.clone().try_acquire_owned().is_err() {
-        return (StatusCode::TOO_MANY_REQUESTS, serde_json::to_string(&serde_json::json!({"error": "Rate limit exceeded"})).unwrap());
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            serde_json::to_string(&serde_json::json!({"error": "Rate limit exceeded"})).unwrap(),
+        );
     }
 
     // Validate query length to prevent resource exhaustion / prompt injection
     if let Err((_status, msg)) = validate_query_length(&params.query, "query") {
-        return (StatusCode::BAD_REQUEST, serde_json::to_string(&serde_json::json!({"error": msg})).unwrap());
+        return (
+            StatusCode::BAD_REQUEST,
+            serde_json::to_string(&serde_json::json!({"error": msg})).unwrap(),
+        );
     }
 
     let query_embedding = match rust_rag_core::embedding::embed(&params.query) {
         Ok(v) => v,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, serde_json::to_string(&serde_json::json!({"error": format!("Embed failed: {}", e)})).unwrap()),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                serde_json::to_string(
+                    &serde_json::json!({"error": format!("Embed failed: {}", e)}),
+                )
+                .unwrap(),
+            )
+        }
     };
 
-    let results = state.0.store.hybrid_search(&query_embedding, &params.query, params.top_k, 0.7, None);
+    let results =
+        state
+            .0
+            .store
+            .hybrid_search(&query_embedding, &params.query, params.top_k, 0.7, None);
 
     match results {
-        Ok(results) => (StatusCode::OK, serde_json::to_string(&serde_json::json!({ "results": results })).unwrap()),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, serde_json::to_string(&serde_json::json!({"error": format!("Search failed: {}", e)})).unwrap()),
+        Ok(results) => (
+            StatusCode::OK,
+            serde_json::to_string(&serde_json::json!({ "results": results })).unwrap(),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            serde_json::to_string(&serde_json::json!({"error": format!("Search failed: {}", e)}))
+                .unwrap(),
+        ),
     }
 }
 
@@ -242,16 +275,25 @@ async fn query_handler(
 ) -> impl axum::response::IntoResponse {
     // Enforce Bearer token auth when API key is configured
     if let Some(unauth_status) = enforce_auth(&headers, &state.api_key, "/query") {
-        return (unauth_status, serde_json::to_string(&serde_json::json!({"error": "Unauthorized"})).unwrap());
+        return (
+            unauth_status,
+            serde_json::to_string(&serde_json::json!({"error": "Unauthorized"})).unwrap(),
+        );
     }
 
     if state.rate_limiter.clone().try_acquire_owned().is_err() {
-        return (StatusCode::TOO_MANY_REQUESTS, serde_json::to_string(&serde_json::json!({"error": "Rate limit exceeded"})).unwrap());
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            serde_json::to_string(&serde_json::json!({"error": "Rate limit exceeded"})).unwrap(),
+        );
     }
 
     // Validate question length to prevent resource exhaustion / prompt injection
     if let Err((_, msg)) = validate_query_length(&body.question, "question") {
-        return (StatusCode::BAD_REQUEST, serde_json::to_string(&serde_json::json!({"error": msg})).unwrap());
+        return (
+            StatusCode::BAD_REQUEST,
+            serde_json::to_string(&serde_json::json!({"error": msg})).unwrap(),
+        );
     }
 
     let config = config::Config::find().unwrap_or_default();
@@ -259,18 +301,38 @@ async fn query_handler(
 
     let query_embedding = match rust_rag_core::embedding::embed(&body.question) {
         Ok(v) => v,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, serde_json::to_string(&serde_json::json!({"error": format!("Embed failed: {}", e)})).unwrap()),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                serde_json::to_string(
+                    &serde_json::json!({"error": format!("Embed failed: {}", e)}),
+                )
+                .unwrap(),
+            )
+        }
     };
 
-    let results = state.0.store.hybrid_search(&query_embedding, &body.question, top_k, 0.7, None);
+    let results = state
+        .0
+        .store
+        .hybrid_search(&query_embedding, &body.question, top_k, 0.7, None);
 
     let results_vec: Vec<_> = match results {
         Ok(r) => r,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, serde_json::to_string(&serde_json::json!({"error": format!("Search failed: {}", e)})).unwrap()),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                serde_json::to_string(
+                    &serde_json::json!({"error": format!("Search failed: {}", e)}),
+                )
+                .unwrap(),
+            )
+        }
     };
 
     // Build context from search results
-    let context: String = results_vec.iter()
+    let context: String = results_vec
+        .iter()
         .map(|r| format!("[{}:{}]\n{}", r.file_path.display(), r.line_start, r.text))
         .collect::<Vec<_>>()
         .join("\n\n");
@@ -283,7 +345,11 @@ async fn query_handler(
     let http_client = std::sync::Arc::clone(&state.0.http_client);
     let answer = tokio::task::spawn_blocking(move || {
         rust_rag_llm::ollama_client::LlmClient::chat_with_http_client(
-            http_client, &endpoint, &model, system_prompt, &user_message,
+            http_client,
+            &endpoint,
+            &model,
+            system_prompt,
+            &user_message,
         )
     })
     .await;
@@ -294,19 +360,26 @@ async fn query_handler(
         Err(_) => "LLM server busy".to_string(),
     };
 
-    let citations: Vec<_> = results_vec.iter()
-        .map(|r| serde_json::json!({
-            "file_path": r.file_path.to_string_lossy(),
-            "line_start": r.line_start,
-            "line_end": r.line_end,
-            "text": r.text,
-        }))
+    let citations: Vec<_> = results_vec
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "file_path": r.file_path.to_string_lossy(),
+                "line_start": r.line_start,
+                "line_end": r.line_end,
+                "text": r.text,
+            })
+        })
         .collect();
 
-    (StatusCode::OK, serde_json::to_string(&serde_json::json!({
-        "answer": answer_text,
-        "citations": citations,
-    })).unwrap())
+    (
+        StatusCode::OK,
+        serde_json::to_string(&serde_json::json!({
+            "answer": answer_text,
+            "citations": citations,
+        }))
+        .unwrap(),
+    )
 }
 
 #[derive(Debug, Deserialize)]
@@ -347,7 +420,9 @@ async fn query_stream_handler(
     if let Err((_, msg)) = validate_query_length(&params.question, "question") {
         return axum::response::Response::builder()
             .status(axum::http::StatusCode::BAD_REQUEST)
-            .body(Body::from(serde_json::to_string(&serde_json::json!({"error": msg})).unwrap_or_default()))
+            .body(Body::from(
+                serde_json::to_string(&serde_json::json!({"error": msg})).unwrap_or_default(),
+            ))
             .unwrap();
     }
 
