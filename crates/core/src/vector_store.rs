@@ -254,6 +254,9 @@ impl VectorStore {
         let avgdl: f64 =
             doc_stats.values().map(|s| s.doc_len).sum::<f64>() / total_docs.max(1) as f64;
 
+        // Precompute query vector magnitude once (avoids redundant work per-document).
+        let query_mag = cosine_similarity(query_vec, query_vec).abs().max(1e-10);
+
         // Score each document with both vector similarity and BM25.
         // Stores (combined_score, vec_similarity_f32, original_index) so we don't recompute cosine sim.
         type DocScore = (f64, f32, usize); // (combined_score, vector_sim_for_result, original_index)
@@ -270,7 +273,7 @@ impl VectorStore {
                         .filter_map(|v| v.as_f64())
                         .map(|f| f as f32)
                         .collect();
-                    cosine_similarity(query_vec, &embed_f32)
+                    cosine_similarity_with_precomputed(query_vec, query_mag, &embed_f32)
                 } else {
                     0.0
                 }
@@ -613,4 +616,19 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
         return 0.0;
     }
     dot / (mag_a * mag_b)
+}
+
+/// Compute cosine similarity between a pre-magnitued query vector and a document vector.
+/// `query_mag` must be the magnitude of `a`, precomputed once before the loop.
+pub fn cosine_similarity_with_precomputed(a: &[f32], query_mag: f32, b: &[f32]) -> f32 {
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
+    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+    let mag_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+
+    if query_mag == 0.0 || mag_b == 0.0 {
+        return 0.0;
+    }
+    dot / (query_mag * mag_b)
 }

@@ -107,10 +107,20 @@ fn stream_chunks<'a>(
 pub struct LlmClient {
     base_url: url::Url,
     model: String,
-    http_client: reqwest::Client,
+    http_client: std::sync::Arc<reqwest::Client>,
 }
 
 impl LlmClient {
+    /// Build a shared `reqwest::Client` with connection pooling and timeouts.
+    pub fn shared_http_client() -> std::sync::Arc<reqwest::Client> {
+        std::sync::Arc::new(
+            reqwest::Client::builder()
+                .pool_max_idle_per_host(10)
+                .build()
+                .expect("Failed to create HTTP client"),
+        )
+    }
+
     /// Create a new client with the given base URL and model.
     pub fn new(base_url: &str, model: &str) -> Self {
         // Validate endpoint before creating client — warns for localhost/private IPs but allows them for local dev
@@ -134,7 +144,28 @@ impl LlmClient {
         LlmClient {
             base_url: url.parse().expect("Invalid base URL"),
             model: model.to_string(),
-            http_client: reqwest::Client::new(),
+            http_client: Self::shared_http_client(),
+        }
+    }
+
+    /// Create a new client with a shared HTTP client to enable connection pooling.
+    pub fn new_with_http_client(base_url: &str, model: &str, http_client: std::sync::Arc<reqwest::Client>) -> Self {
+        let url = if !base_url.starts_with("http") {
+            format!("http://{}/chat/completions", base_url)
+        } else if base_url.ends_with("/chat/completions")
+            || base_url.ends_with("/v1/chat/completions")
+        {
+            let url = base_url.trim_end_matches('/');
+            let slash_pos = url.rfind('/').map(|i| i + 1).unwrap_or(url.len());
+            format!("{}/chat/completions", &url[..slash_pos])
+        } else {
+            format!("{}/chat/completions", base_url)
+        };
+
+        LlmClient {
+            base_url: url.parse().expect("Invalid base URL"),
+            model: model.to_string(),
+            http_client,
         }
     }
 
@@ -198,6 +229,18 @@ impl LlmClient {
         user_message: &str,
     ) -> Result<String> {
         let client = LlmClient::new(endpoint, model);
+        Self::sync_runtime().block_on(client.complete(system_prompt, user_message))
+    }
+
+    /// Synchronous chat with an explicit shared HTTP client for connection pooling.
+    pub fn chat_with_http_client(
+        http_client: std::sync::Arc<reqwest::Client>,
+        endpoint: &str,
+        model: &str,
+        system_prompt: &str,
+        user_message: &str,
+    ) -> Result<String> {
+        let client = LlmClient::new_with_http_client(endpoint, model, http_client);
         Self::sync_runtime().block_on(client.complete(system_prompt, user_message))
     }
 }

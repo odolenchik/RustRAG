@@ -90,7 +90,8 @@ fn parse_call_exprs(text: &str) -> Vec<String> {
     let parsed = SourceFile::parse(text);
     let root = parsed.tree();
 
-    // Walk the AST tree to find all call expressions
+    // Use a HashSet for O(1) deduplication lookup, then convert to Vec to preserve insertion order.
+    let mut seen: std::collections::HashSet<String> = Default::default();
     let mut callees: Vec<String> = Vec::new();
     for node in root.syntax().descendants() {
         if let Some(call_expr) = ra_ap_syntax::ast::CallExpr::cast(node.clone()) {
@@ -98,8 +99,8 @@ fn parse_call_exprs(text: &str) -> Vec<String> {
             if let Some(expr) = call_expr.expr() {
                 // Expr implements Display — convert to string for callee name
                 let name = expr.to_string();
-                // Skip trivial calls like `true`, `false`, `self`, `Self`
-                if !is_trivial_call(&name) && !callees.contains(&name) {
+                // Skip trivial calls like `true`, `false`, `self`, `Self` and duplicates
+                if !is_trivial_call(&name) && seen.insert(name.clone()) {
                     callees.push(name);
                 }
             }

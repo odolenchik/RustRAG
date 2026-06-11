@@ -2637,6 +2637,7 @@ dependencies = [
  "clap",
  "futures-util",
  "http",
+ "reqwest",
  "rust-rag-core",
  "rust-rag-llm",
  "serde",

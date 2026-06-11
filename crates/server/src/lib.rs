@@ -12,6 +12,7 @@ use axum::{
 use futures_util::StreamExt;
 use rust_rag_core::{config, vector_store::VectorStore};
 use rust_rag_llm::ChatBackend;
+
 use serde::Deserialize;
 use std::{path::Path, sync::Arc};
 use tokio::sync::Semaphore;
@@ -22,6 +23,12 @@ pub struct AppState {
     pub store: std::sync::Arc<VectorStore>,
     /// Rate limiter: permits per minute for non-stream endpoints.
     pub rate_limiter: Arc<Semaphore>,
+    /// Shared HTTP client for LLM requests — enables connection pooling.
+    pub http_client: std::sync::Arc<reqwest::Client>,
+    /// Resolved LLM endpoint (from config / env / default).
+    pub llm_endpoint: String,
+    /// Resolved LLM model name (from config / env / default).
+    pub llm_model: String,
 }
 
 impl Clone for AppState {
@@ -29,11 +36,38 @@ impl Clone for AppState {
         Self {
             store: std::sync::Arc::clone(&self.store),
             rate_limiter: Arc::clone(&self.rate_limiter),
+            http_client: std::sync::Arc::clone(&self.http_client),
+            llm_endpoint: self.llm_endpoint.clone(),
+            llm_model: self.llm_model.clone(),
         }
     }
 }
 
 impl AppState {
+    /// Resolve LLM endpoint with priority: config > LLAMA_ENDPOINT env > default.
+    fn resolve_endpoint() -> String {
+        let cfg = rust_rag_core::config::Config::find().ok();
+        std::env::var("LLAMA_ENDPOINT")
+            .ok()
+            .or_else(|| {
+                cfg.as_ref().and_then(|c| c.llm_config().endpoint.clone())
+            })
+            .unwrap_or_else(|| "http://localhost:8080".to_string())
+    }
+
+    /// Resolve LLM model with priority: config > LLAMA_MODEL env > default.
+    fn resolve_model() -> String {
+        let cfg = rust_rag_core::config::Config::find().ok();
+        std::env::var("LLAMA_MODEL")
+            .ok()
+            .or_else(|| {
+                cfg.as_ref().and_then(|c| c.llm_config().model.clone())
+            })
+            .unwrap_or_else(|| {
+                "Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-IQ3_M.gguf".to_string()
+            })
+    }
+
     /// Create app state from a workspace root that has an index.
     pub fn from_workspace(workspace_root: &Path, rate_limit_per_min: u32) -> Result<Self> {
         let store_path = workspace_root.join(".rustrag");
@@ -47,6 +81,9 @@ impl AppState {
         Ok(Self {
             store: std::sync::Arc::new(store),
             rate_limiter: Arc::new(Semaphore::new(rate_limit_per_min as usize)),
+            http_client: rust_rag_llm::ollama_client::LlmClient::shared_http_client(),
+            llm_endpoint: Self::resolve_endpoint(),
+            llm_model: Self::resolve_model(),
         })
     }
 
@@ -56,6 +93,9 @@ impl AppState {
         Ok(Self {
             store: std::sync::Arc::new(store),
             rate_limiter: Arc::new(Semaphore::new(rate_limit_per_min as usize)),
+            http_client: rust_rag_llm::ollama_client::LlmClient::shared_http_client(),
+            llm_endpoint: Self::resolve_endpoint(),
+            llm_model: Self::resolve_model(),
         })
     }
 }
@@ -164,10 +204,12 @@ async fn query_handler(
     let system_prompt = rust_rag_core::constants::DEFAULT_SYSTEM_PROMPT;
     let user_message = format!("Question: {}\n\nRelevant code:\n{}", body.question, context);
 
-    // Call LLM using config-aware client (reads endpoint/model from .rustrag.toml).
-    // Use spawn_blocking because LlmClient::chat() does block_on internally.
+  // Call LLM using the shared HTTP client from AppState for connection pooling.
+    let endpoint = state.0.llm_endpoint.clone();
+    let model = state.0.llm_model.clone();
+    let http_client = std::sync::Arc::clone(&state.0.http_client);
     let answer = tokio::task::spawn_blocking(move || {
-        rust_rag_llm::ollama_client::LlmClient::chat(system_prompt, &user_message)
+        rust_rag_llm::ollama_client::LlmClient::chat_with_http_client(http_client, &endpoint, &model, system_prompt, &user_message)
     })
     .await;
 
@@ -257,11 +299,16 @@ async fn query_stream_handler(
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<bytes::Bytes, axum::BoxError>>(16);
 
     {
-        let tx_clone = tx.clone();
+     let tx_clone = tx.clone();
         // Spawn the LLM streaming task directly as async — no nested runtime needed.
-        // The LlmClient methods already use .await internally via the ChatBackend trait.
+        // Use shared HTTP client from AppState for connection pooling.
+        let endpoint = state.0.llm_endpoint.clone();
+        let model = state.0.llm_model.clone();
+        let http_client = std::sync::Arc::clone(&state.0.http_client);
         tokio::spawn(async move {
-            let client = rust_rag_llm::ollama_client::LlmClient::from_config();
+            let client = rust_rag_llm::ollama_client::LlmClient::new_with_http_client(
+                &endpoint, &model, http_client,
+            );
             let mut stream = client.complete_stream_chunks(system_prompt, &user_message);
             while let Some(chunk) = stream.next().await {
                 match chunk {
