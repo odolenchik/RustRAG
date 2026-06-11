@@ -129,12 +129,12 @@ fn handle_tools_list(state: &McpState) -> Result<Value> {
     }))
 }
 
-fn handle_tools_call(params: Value, state: &McpState) -> Result<Value> {
+async fn handle_tools_call(params: Value, state: &McpState) -> Result<Value> {
     let call_params: ToolCallParams = serde_json::from_value(params)?;
 
     match call_params.name.as_str() {
         "rag_search" => rag_search_tool(&call_params.arguments, state),
-        "rag_query" => rag_query_tool(&call_params.arguments, state),
+        "rag_query" => rag_query_tool(&call_params.arguments, state).await,
         _ => anyhow::bail!("Unknown tool: {}", call_params.name),
     }
 }
@@ -273,7 +273,7 @@ fn rag_search_tool(args: &Value, state: &McpState) -> Result<Value> {
     }))
 }
 
-fn rag_query_tool(args: &Value, state: &McpState) -> Result<Value> {
+async fn rag_query_tool(args: &Value, state: &McpState) -> Result<Value> {
     let schema = serde_json::json!({
         "type": "object",
         "properties": {
@@ -311,7 +311,12 @@ fn rag_query_tool(args: &Value, state: &McpState) -> Result<Value> {
     let system_prompt = rust_rag_core::constants::DEFAULT_SYSTEM_PROMPT;
     let user_message = format!("Question: {}\n\nRelevant code:\n{}", question, context);
 
-    let answer = rust_rag_llm::ollama_client::LlmClient::chat(system_prompt, &user_message)?;
+    // Use spawn_blocking to avoid nested runtime conflict — the MCP loop runs inside tokio's async main
+    let answer = tokio::task::spawn_blocking(move || {
+        rust_rag_llm::ollama_client::LlmClient::chat(system_prompt, &user_message)
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("LLM task join error: {}", e))??;
 
     let citations: Vec<Value> = results
         .iter()
@@ -352,7 +357,7 @@ fn results_to_string(results: &[rust_rag_core::vector_store::SearchResult]) -> S
 // ---- Main MCP server loop --------------------------------------------------
 
 /// Run the MCP server — reads JSON-RPC requests from stdin, writes responses to stdout.
-pub fn run_mcp_server(workspace_root: &std::path::Path) -> Result<()> {
+pub async fn run_mcp_server(workspace_root: &std::path::Path) -> Result<()> {
     let state = std::sync::Arc::<std::sync::Mutex<McpState>>::new(std::sync::Mutex::new(
         McpState::new(workspace_root),
     ));
@@ -387,7 +392,7 @@ pub fn run_mcp_server(workspace_root: &std::path::Path) -> Result<()> {
 
         // Dispatch each request.
         for req in requests {
-            let response = dispatch_request(req, &state);
+            let response = dispatch_request(req, &state).await;
             if let Some(resp) = response {
                 writeln!(io::stdout(), "{}", serde_json::to_string(&resp).unwrap()).ok();
                 io::stdout().flush().ok();
@@ -398,7 +403,7 @@ pub fn run_mcp_server(workspace_root: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-fn dispatch_request(
+async fn dispatch_request(
     req: JsonRpcRequest,
     state: &std::sync::Arc<std::sync::Mutex<McpState>>,
 ) -> Option<JsonRpcResponse> {
@@ -433,7 +438,7 @@ fn dispatch_request(
             Ok(serde_json::json!({}))
         }
         "tools/list" => handle_tools_list(&guard),
-        "tools/call" => handle_tools_call(params, &guard),
+        "tools/call" => handle_tools_call(params, &guard).await,
         _ => Err(anyhow::anyhow!("Method not found: {}", method)),
     };
 

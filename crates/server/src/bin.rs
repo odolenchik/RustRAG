@@ -38,9 +38,11 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Serve(args) => run_server(args.port, args.rate_limit).await,
-        Command::Mcp(args) => run_mcp(args.path.as_deref()).await,
+        Command::Serve(args) => run_server(args.port, args.rate_limit).await?,
+        Command::Mcp(args) => run_mcp(args.path.as_deref()).await?,
     }
+
+    Ok(())
 }
 
 async fn run_server(port: u16, rate_limit: u32) -> Result<()> {
@@ -78,6 +80,6 @@ async fn run_mcp(workspace_path: Option<&str>) -> Result<()> {
         });
 
     println!("Starting RustRAG MCP server (stdio)");
-    rust_rag_server::mcp::run_mcp_server(&workspace_root)?;
+    rust_rag_server::mcp::run_mcp_server(&workspace_root).await?;
     Ok(())
 }
