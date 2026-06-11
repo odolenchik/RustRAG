@@ -269,7 +269,7 @@ pub fn extract_workspace_members(cargo: &toml::Value, root: &Path) -> Vec<PathBu
         if let Ok(paths_found) = glob::glob(&full_pattern.to_string_lossy()) {
             for entry in paths_found.filter_map(|e| e.ok()) {
                 if entry.is_dir() {
-                    paths.push(entry.canonicalize().unwrap_or_else(|_| entry));
+                    paths.push(entry.canonicalize().unwrap_or(entry));
                 }
             }
         } else {

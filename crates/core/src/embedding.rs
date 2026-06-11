@@ -150,7 +150,7 @@ static EMBEDDER: OnceLock<Result<TextEmbedding, anyhow::Error>> = OnceLock::new(
 /// Returns an error if the ONNX model failed to load instead of panicking.
 fn get_embedder() -> Result<&'static TextEmbedding> {
     EMBEDDER
-        .get_or_init(|| init_embedder())
+        .get_or_init(init_embedder)
         .as_ref()
         .map_err(|e| anyhow::anyhow!("Embedding model initialization failed: {e}"))
 }
