@@ -167,6 +167,12 @@ pub fn build_router(state: AppState) -> Router {
         .route("/query/stream", get(query_stream_handler))
         .layer(cors)
         .with_state(state)
+        .fallback(handler_not_found)
+}
+
+/// Fallback handler for unmatched routes.
+async fn handler_not_found() -> (StatusCode, &'static str) {
+    (StatusCode::NOT_FOUND, "Not Found")
 }
 
 /// GET /status — returns index metadata (no sensitive paths exposed).
@@ -186,29 +192,26 @@ async fn search_handler(
     state: axum::extract::State<AppState>,
     headers: axum::http::HeaderMap,
     Query(params): Query<SearchQuery>,
-) -> Result<JsonResponse<serde_json::Value>, StatusCode> {
+) -> impl axum::response::IntoResponse {
     // Enforce Bearer token auth when API key is configured
     if let Some(unauth_status) = enforce_auth(&headers, &state.api_key, "/search") {
-        return Err(unauth_status);
+        return (unauth_status, serde_json::to_string(&serde_json::json!({"error": "Unauthorized"})).unwrap());
     }
 
     if state.rate_limiter.clone().try_acquire_owned().is_err() {
-        return Err(StatusCode::TOO_MANY_REQUESTS);
+        return (StatusCode::TOO_MANY_REQUESTS, serde_json::to_string(&serde_json::json!({"error": "Rate limit exceeded"})).unwrap());
     }
+
     let query_embedding = match rust_rag_core::embedding::embed(&params.query) {
         Ok(v) => v,
-        Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, serde_json::to_string(&serde_json::json!({"error": format!("Embed failed: {}", e)})).unwrap()),
     };
 
-    let results =
-        state
-            .0
-            .store
-            .hybrid_search(&query_embedding, &params.query, params.top_k, 0.7, None);
+    let results = state.0.store.hybrid_search(&query_embedding, &params.query, params.top_k, 0.7, None);
 
     match results {
-        Ok(results) => Ok(JsonResponse(serde_json::json!({ "results": results }))),
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+        Ok(results) => (StatusCode::OK, serde_json::to_string(&serde_json::json!({ "results": results })).unwrap()),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, serde_json::to_string(&serde_json::json!({"error": format!("Search failed: {}", e)})).unwrap()),
     }
 }
 
@@ -217,37 +220,33 @@ async fn query_handler(
     state: axum::extract::State<AppState>,
     headers: axum::http::HeaderMap,
     Json(body): Json<QueryBody>,
-) -> Result<JsonResponse<serde_json::Value>, StatusCode> {
+) -> impl axum::response::IntoResponse {
     // Enforce Bearer token auth when API key is configured
     if let Some(unauth_status) = enforce_auth(&headers, &state.api_key, "/query") {
-        return Err(unauth_status);
+        return (unauth_status, serde_json::to_string(&serde_json::json!({"error": "Unauthorized"})).unwrap());
     }
 
     if state.rate_limiter.clone().try_acquire_owned().is_err() {
-        return Err(StatusCode::TOO_MANY_REQUESTS);
+        return (StatusCode::TOO_MANY_REQUESTS, serde_json::to_string(&serde_json::json!({"error": "Rate limit exceeded"})).unwrap());
     }
+
     let config = config::Config::find().unwrap_or_default();
     let top_k = config.llm_config().top_k;
 
-    // Embed the question using core embedding singleton
     let query_embedding = match rust_rag_core::embedding::embed(&body.question) {
         Ok(v) => v,
-        Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, serde_json::to_string(&serde_json::json!({"error": format!("Embed failed: {}", e)})).unwrap()),
     };
 
-    let results = state
-        .0
-        .store
-        .hybrid_search(&query_embedding, &body.question, top_k, 0.7, None);
+    let results = state.0.store.hybrid_search(&query_embedding, &body.question, top_k, 0.7, None);
 
     let results_vec: Vec<_> = match results {
         Ok(r) => r,
-        Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, serde_json::to_string(&serde_json::json!({"error": format!("Search failed: {}", e)})).unwrap()),
     };
 
     // Build context from search results
-    let context: String = results_vec
-        .iter()
+    let context: String = results_vec.iter()
         .map(|r| format!("[{}:{}]\n{}", r.file_path.display(), r.line_start, r.text))
         .collect::<Vec<_>>()
         .join("\n\n");
@@ -255,17 +254,12 @@ async fn query_handler(
     let system_prompt = rust_rag_core::constants::DEFAULT_SYSTEM_PROMPT;
     let user_message = format!("Question: {}\n\nRelevant code:\n{}", body.question, context);
 
-    // Call LLM using the shared HTTP client from AppState for connection pooling.
     let endpoint = state.0.llm_endpoint.clone();
     let model = state.0.llm_model.clone();
     let http_client = std::sync::Arc::clone(&state.0.http_client);
     let answer = tokio::task::spawn_blocking(move || {
         rust_rag_llm::ollama_client::LlmClient::chat_with_http_client(
-            http_client,
-            &endpoint,
-            &model,
-            system_prompt,
-            &user_message,
+            http_client, &endpoint, &model, system_prompt, &user_message,
         )
     })
     .await;
@@ -276,22 +270,19 @@ async fn query_handler(
         Err(_) => "LLM server busy".to_string(),
     };
 
-    let citations: Vec<_> = results_vec
-        .iter()
-        .map(|r| {
-            serde_json::json!({
-                "file_path": r.file_path.to_string_lossy(),
-                "line_start": r.line_start,
-                "line_end": r.line_end,
-                "text": r.text,
-            })
-        })
+    let citations: Vec<_> = results_vec.iter()
+        .map(|r| serde_json::json!({
+            "file_path": r.file_path.to_string_lossy(),
+            "line_start": r.line_start,
+            "line_end": r.line_end,
+            "text": r.text,
+        }))
         .collect();
 
-    Ok(JsonResponse(serde_json::json!({
+    (StatusCode::OK, serde_json::to_string(&serde_json::json!({
         "answer": answer_text,
         "citations": citations,
-    })))
+    })).unwrap())
 }
 
 #[derive(Debug, Deserialize)]

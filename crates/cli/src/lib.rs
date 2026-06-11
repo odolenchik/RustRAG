@@ -373,7 +373,12 @@ fn collect_file_hashes(root: &Path) -> Result<HashMap<std::path::PathBuf, String
     let member_paths = rust_rag_core::indexer::extract_workspace_members(&cargo_toml, root);
 
     for member_path in member_paths {
-        let src_dir = member_path.join("src");
+        // Paths are now absolute (glob-expanded) or relative from root
+        let src_dir = if member_path.is_absolute() {
+            member_path.join("src")
+        } else {
+            root.join(&member_path).join("src")
+        };
         if !src_dir.exists() {
             continue;
         }

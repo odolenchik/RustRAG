@@ -250,19 +250,40 @@ pub fn index_workspace(root: &Path) -> Result<Vec<Chunk>> {
 }
 
 pub fn extract_workspace_members(cargo: &toml::Value, root: &Path) -> Vec<PathBuf> {
-    let mut paths = Vec::new();
+    let mut raw_paths = Vec::new();
 
     if let Some(workspace) = cargo.get("workspace") {
         if let Some(members) = workspace.get("members").and_then(|v| v.as_array()) {
             for member in members {
                 if let Some(name) = member.as_str() {
-                    paths.push(PathBuf::from(name));
+                    raw_paths.push(name.to_string());
                 }
             }
         }
     }
 
-    if paths.is_empty() {
+    // Expand glob patterns (e.g., "crates/*") and resolve to absolute paths
+    let mut paths: Vec<PathBuf> = Vec::new();
+    for pattern in &raw_paths {
+        let full_pattern = root.join(pattern);
+        if let Ok(paths_found) = glob::glob(&full_pattern.to_string_lossy()) {
+            for entry in paths_found.filter_map(|e| e.ok()) {
+                if entry.is_dir() {
+                    paths.push(entry.canonicalize().unwrap_or_else(|_| entry));
+                }
+            }
+        } else {
+            // Not a glob, add as-is (will be joined with root later)
+            paths.push(PathBuf::from(pattern));
+        }
+    }
+
+    if paths.is_empty() && !raw_paths.is_empty() {
+        // Glob didn't match anything, use raw paths joined to root
+        for p in &raw_paths {
+            paths.push(root.join(p));
+        }
+    } else if paths.is_empty() {
         paths.push(root.to_path_buf());
     }
 
