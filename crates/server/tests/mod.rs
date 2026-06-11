@@ -2,7 +2,6 @@
 ///
 /// These tests modify environment variables, so they must run sequentially.
 /// We use a module-level mutex to serialize access.
-
 use rust_rag_server::AppState;
 use std::sync::Mutex;
 

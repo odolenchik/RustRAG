@@ -279,13 +279,11 @@ impl App {
         .split(frame.area());
 
         // --- Title bar ---
-        let title_style = Style::default()
-            .fg(COLORS.title_fg)
-            .bg(COLORS.title_bg);
+        let title_style = Style::default().fg(COLORS.title_fg).bg(COLORS.title_bg);
         let title = Span::styled(" RustRAG - Interactive Chat ", title_style);
         frame.render_widget(title, main_chunks[0]);
 
-       // --- Output area: delegate to transcript component ---
+        // --- Output area: delegate to transcript component ---
         let transcript_data = super::ui::transcript::TranscriptComponent {
             error_msg: self.error_msg.clone(),
             search_results: std::mem::take(&mut self.search_results),

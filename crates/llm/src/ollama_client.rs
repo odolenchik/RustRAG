@@ -149,7 +149,11 @@ impl LlmClient {
     }
 
     /// Create a new client with a shared HTTP client to enable connection pooling.
-    pub fn new_with_http_client(base_url: &str, model: &str, http_client: std::sync::Arc<reqwest::Client>) -> Self {
+    pub fn new_with_http_client(
+        base_url: &str,
+        model: &str,
+        http_client: std::sync::Arc<reqwest::Client>,
+    ) -> Self {
         let url = if !base_url.starts_with("http") {
             format!("http://{}/chat/completions", base_url)
         } else if base_url.ends_with("/chat/completions")
@@ -195,9 +199,7 @@ impl LlmClient {
         })();
 
         let endpoint = endpoint.unwrap_or_else(|| "http://localhost:8080".to_string());
-        let model = model.unwrap_or_else(|| {
-            "default-rag-model".to_string()
-        });
+        let model = model.unwrap_or_else(|| "default-rag-model".to_string());
 
         LlmClient::new(&endpoint, &model)
     }

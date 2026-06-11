@@ -62,12 +62,8 @@ fn resolve_host(host: &str) -> std::io::Result<Vec<std::net::IpAddr>> {
 /// Returns true if an IP address is private, loopback, or link-local.
 fn is_private_or_loopback(ip: &std::net::IpAddr) -> bool {
     match ip {
-        std::net::IpAddr::V4(v4) => {
-            v4.is_loopback() || v4.is_private() || v4.is_link_local()
-        }
-        std::net::IpAddr::V6(v6) => {
-            v6.is_loopback() || v6.is_unique_local()
-        }
+        std::net::IpAddr::V4(v4) => v4.is_loopback() || v4.is_private() || v4.is_link_local(),
+        std::net::IpAddr::V6(v6) => v6.is_loopback() || v6.is_unique_local(),
     }
 }
 

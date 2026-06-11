@@ -562,7 +562,7 @@ fn test_hybrid_alpha_pure_bm25_gives_consistent_ranking() {
         .hybrid_search(&query_vec, "embedding", 5, 0.0, None)
         .expect("should search");
 
-    assert!(results_at_0.len() >= 1);
+    assert!(!results_at_0.is_empty());
     // At pure BM25, doc_a contains the word "embedding" in its text → should rank high
     let top_file = &results_at_0[0].file_path.display().to_string();
     if *top_file == "bm25.rs" || *top_file == "hybrid.rs" {
@@ -650,7 +650,7 @@ fn test_bm25_scored_by_text_relevance() {
         .hybrid_search(&embedding, "embedding", 5, 0.0, None)
         .expect("should search");
 
-    assert!(results.len() >= 1);
+    assert!(!results.is_empty());
     // Doc A has the word "embedding" in its text → should rank higher than doc B at pure BM25
     if results.len() >= 2 {
         let top_doc = &results[0];
@@ -689,7 +689,7 @@ fn test_search_filters_by_symbol_kind() {
 
 #[test]
 fn test_search_filters_by_file_extension() {
-    let (_dir, store) = make_hybrid_store();
+    let (_dir, _store) = make_hybrid_store();
 
     // Create store with files of different extensions (simulated via file_path)
     let dir = tempfile::tempdir().unwrap();
@@ -759,7 +759,7 @@ fn test_hybrid_search_empty_query() {
         .expect("should search");
 
     // Should not panic and should return documents ranked by vector similarity
-    assert!(results.len() >= 1);
+    assert!(!results.is_empty());
 }
 
 #[test]
@@ -1573,16 +1573,14 @@ fn my_func() {
 "#;
     // The callgraph module is not directly accessible from tests, but we can verify
     // through the public API by checking that build_call_graph doesn't panic on valid input.
-    let chunks = vec![
-        rust_rag_core::indexer::Chunk {
-            file_path: PathBuf::from("src/main.rs"),
-            line_start: 0,
-            line_end: 50,
-            module_name: "main/my_func".to_string(),
-            symbol_kind: SymbolKind::Function,
-            text: code.to_string(),
-        },
-    ];
+    let chunks = vec![rust_rag_core::indexer::Chunk {
+        file_path: PathBuf::from("src/main.rs"),
+        line_start: 0,
+        line_end: 50,
+        module_name: "main/my_func".to_string(),
+        symbol_kind: SymbolKind::Function,
+        text: code.to_string(),
+    }];
 
     let (graph, _name_map) = rust_rag_core::callgraph::build_call_graph(&chunks).unwrap();
     assert!(graph.node_count() >= 1);
@@ -1615,16 +1613,14 @@ fn test_callgraph_build_creates_nodes_for_all_chunks() {
 
 #[test]
 fn test_callgraph_ignores_non_function_chunks() {
-    let chunks = vec![
-        rust_rag_core::indexer::Chunk {
-            file_path: PathBuf::from("src/lib.rs"),
-            line_start: 0,
-            line_end: 10,
-            module_name: "lib/my_struct".to_string(),
-            symbol_kind: SymbolKind::Struct,
-            text: "struct MyStruct {}".to_string(),
-        },
-    ];
+    let chunks = vec![rust_rag_core::indexer::Chunk {
+        file_path: PathBuf::from("src/lib.rs"),
+        line_start: 0,
+        line_end: 10,
+        module_name: "lib/my_struct".to_string(),
+        symbol_kind: SymbolKind::Struct,
+        text: "struct MyStruct {}".to_string(),
+    }];
 
     let (graph, _name_map) = rust_rag_core::callgraph::build_call_graph(&chunks).unwrap();
     assert_eq!(graph.edge_count(), 0); // structs don't produce call edges
@@ -1645,8 +1641,14 @@ fn hello_world() -> &'static str {
     )
     .expect("should parse");
 
-    let func_chunks: Vec<_> = chunks.iter().filter(|c| c.symbol_kind == SymbolKind::Function).collect();
-    assert!(!func_chunks.is_empty(), "Should extract at least one function chunk");
+    let func_chunks: Vec<_> = chunks
+        .iter()
+        .filter(|c| c.symbol_kind == SymbolKind::Function)
+        .collect();
+    assert!(
+        !func_chunks.is_empty(),
+        "Should extract at least one function chunk"
+    );
 }
 
 #[test]
@@ -1666,8 +1668,14 @@ impl MyStruct {
     )
     .expect("should parse");
 
-    let impl_chunks: Vec<_> = chunks.iter().filter(|c| c.symbol_kind == SymbolKind::ImplBlock).collect();
-    assert!(!impl_chunks.is_empty(), "Should extract at least one impl block chunk");
+    let impl_chunks: Vec<_> = chunks
+        .iter()
+        .filter(|c| c.symbol_kind == SymbolKind::ImplBlock)
+        .collect();
+    assert!(
+        !impl_chunks.is_empty(),
+        "Should extract at least one impl block chunk"
+    );
 }
 
 #[test]
@@ -1694,7 +1702,11 @@ impl Foo {
     .expect("should parse without panic");
 
     // At least the impl block should be extracted (tree-sitter-rust node types vary)
-    assert!(!chunks.is_empty(), "Should extract at least one chunk from code with unsafe, got {} total", chunks.len());
+    assert!(
+        !chunks.is_empty(),
+        "Should extract at least one chunk from code with unsafe, got {} total",
+        chunks.len()
+    );
 }
 
 #[test]
@@ -1723,7 +1735,11 @@ mod types {
     .expect("should parse without panic");
 
     // The module wrapper should be extracted; the rest depends on tree-sitter-rust version
-    assert!(!chunks.is_empty(), "Should extract at least one chunk from code with struct in module, got {} total", chunks.len());
+    assert!(
+        !chunks.is_empty(),
+        "Should extract at least one chunk from code with struct in module, got {} total",
+        chunks.len()
+    );
 }
 
 #[test]
@@ -1754,7 +1770,11 @@ mod types {
     )
     .expect("should parse without panic");
 
-    assert!(!chunks.is_empty(), "Should extract at least one chunk from code with enum in module, got {} total", chunks.len());
+    assert!(
+        !chunks.is_empty(),
+        "Should extract at least one chunk from code with enum in module, got {} total",
+        chunks.len()
+    );
 }
 
 #[test]
@@ -1778,7 +1798,11 @@ impl MyTrait for Wrapper {
     )
     .expect("should parse without panic");
 
-    assert!(!chunks.is_empty(), "Should extract at least one chunk from code with trait impl, got {} total", chunks.len());
+    assert!(
+        !chunks.is_empty(),
+        "Should extract at least one chunk from code with trait impl, got {} total",
+        chunks.len()
+    );
 }
 
 #[test]
@@ -1796,8 +1820,15 @@ fn func_c() {}
     )
     .expect("should parse");
 
-    let func_chunks: Vec<_> = chunks.iter().filter(|c| c.symbol_kind == SymbolKind::Function).collect();
-    assert_eq!(func_chunks.len(), 3, "Should extract exactly three function chunks");
+    let func_chunks: Vec<_> = chunks
+        .iter()
+        .filter(|c| c.symbol_kind == SymbolKind::Function)
+        .collect();
+    assert_eq!(
+        func_chunks.len(),
+        3,
+        "Should extract exactly three function chunks"
+    );
 }
 
 #[test]

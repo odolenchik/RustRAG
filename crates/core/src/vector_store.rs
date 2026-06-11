@@ -67,10 +67,7 @@ impl VectorStore {
     #[cfg(unix)]
     fn set_restricted_permissions(path: &std::path::Path) {
         use std::os::unix::fs::PermissionsExt;
-        if let Err(e) = std::fs::set_permissions(
-            path,
-            std::fs::Permissions::from_mode(0o700),
-        ) {
+        if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)) {
             eprintln!(
                 "[warning] Failed to set restrictive permissions on {}: {}",
                 path.display(),

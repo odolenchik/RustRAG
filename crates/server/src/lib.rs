@@ -52,9 +52,7 @@ impl AppState {
         let cfg = rust_rag_core::config::Config::find().ok();
         std::env::var("LLAMA_ENDPOINT")
             .ok()
-            .or_else(|| {
-                cfg.as_ref().and_then(|c| c.llm_config().endpoint.clone())
-            })
+            .or_else(|| cfg.as_ref().and_then(|c| c.llm_config().endpoint.clone()))
             .unwrap_or_else(|| "http://localhost:8080".to_string())
     }
 
@@ -63,12 +61,8 @@ impl AppState {
         let cfg = rust_rag_core::config::Config::find().ok();
         std::env::var("LLAMA_MODEL")
             .ok()
-            .or_else(|| {
-                cfg.as_ref().and_then(|c| c.llm_config().model.clone())
-            })
-            .unwrap_or_else(|| {
-                "default-rag-model".to_string()
-            })
+            .or_else(|| cfg.as_ref().and_then(|c| c.llm_config().model.clone()))
+            .unwrap_or_else(|| "default-rag-model".to_string())
     }
 
     /// Resolve optional API key from RUSRAG_API_KEY env var.
@@ -134,7 +128,11 @@ fn extract_bearer_token(headers: &axum::http::HeaderMap) -> Option<String> {
 }
 
 /// Enforce Bearer token auth on a request. Returns 401 if unauthorized, or None if authorized/public.
-fn enforce_auth(headers: &axum::http::HeaderMap, api_key: &Option<String>, path: &str) -> Option<StatusCode> {
+fn enforce_auth(
+    headers: &axum::http::HeaderMap,
+    api_key: &Option<String>,
+    path: &str,
+) -> Option<StatusCode> {
     // /status is always public — no auth required
     if path == "/status" {
         return None;
@@ -157,9 +155,9 @@ fn enforce_auth(headers: &axum::http::HeaderMap, api_key: &Option<String>, path:
 pub fn build_router(state: AppState) -> Router {
     // Restrictive CORS: only allow same-origin requests (local dev / IDE plugins)
     let cors = CorsLayer::new()
-        .allow_origin(AllowOrigin::exact(
-            axum::http::HeaderValue::from_static("http://127.0.0.1"),
-        ))
+        .allow_origin(AllowOrigin::exact(axum::http::HeaderValue::from_static(
+            "http://127.0.0.1",
+        )))
         .allow_methods(vec![axum::http::Method::GET, axum::http::Method::POST]);
 
     Router::new()
@@ -171,13 +169,10 @@ pub fn build_router(state: AppState) -> Router {
         .with_state(state)
 }
 
-
 /// GET /status — returns index metadata (no sensitive paths exposed).
 async fn status_handler(state: axum::extract::State<AppState>) -> JsonResponse<serde_json::Value> {
-    let content = match std::fs::read_to_string(state.0.store.path.join("index.jsonl")) {
-        Ok(c) => c,
-        Err(_) => String::new(),
-    };
+    let content =
+        std::fs::read_to_string(state.0.store.path.join("index.jsonl")).unwrap_or_default();
     let total_chunks = content.lines().filter(|l| !l.trim().is_empty()).count();
 
     JsonResponse(serde_json::json!({
@@ -260,12 +255,18 @@ async fn query_handler(
     let system_prompt = rust_rag_core::constants::DEFAULT_SYSTEM_PROMPT;
     let user_message = format!("Question: {}\n\nRelevant code:\n{}", body.question, context);
 
-  // Call LLM using the shared HTTP client from AppState for connection pooling.
+    // Call LLM using the shared HTTP client from AppState for connection pooling.
     let endpoint = state.0.llm_endpoint.clone();
     let model = state.0.llm_model.clone();
     let http_client = std::sync::Arc::clone(&state.0.http_client);
     let answer = tokio::task::spawn_blocking(move || {
-        rust_rag_llm::ollama_client::LlmClient::chat_with_http_client(http_client, &endpoint, &model, system_prompt, &user_message)
+        rust_rag_llm::ollama_client::LlmClient::chat_with_http_client(
+            http_client,
+            &endpoint,
+            &model,
+            system_prompt,
+            &user_message,
+        )
     })
     .await;
 
@@ -371,7 +372,7 @@ async fn query_stream_handler(
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<bytes::Bytes, axum::BoxError>>(16);
 
     {
-     let tx_clone = tx.clone();
+        let tx_clone = tx.clone();
         // Spawn the LLM streaming task directly as async — no nested runtime needed.
         // Use shared HTTP client from AppState for connection pooling.
         let endpoint = state.0.llm_endpoint.clone();
@@ -379,7 +380,9 @@ async fn query_stream_handler(
         let http_client = std::sync::Arc::clone(&state.0.http_client);
         tokio::spawn(async move {
             let client = rust_rag_llm::ollama_client::LlmClient::new_with_http_client(
-                &endpoint, &model, http_client,
+                &endpoint,
+                &model,
+                http_client,
             );
             let mut stream = client.complete_stream_chunks(system_prompt, &user_message);
             while let Some(chunk) = stream.next().await {

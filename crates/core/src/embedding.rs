@@ -341,8 +341,7 @@ pub fn download_model(target: &Path) -> Result<()> {
         .build()?;
 
     // Parse optional checksum overrides from env (e.g. "sha256:model.onnx=<hash>")
-    let expected_checksums: std::collections::HashMap<String, String> =
-        parse_expected_checksums();
+    let expected_checksums: std::collections::HashMap<String, String> = parse_expected_checksums();
 
     std::fs::create_dir_all(target)?;
 
@@ -365,7 +364,10 @@ pub fn download_model(target: &Path) -> Result<()> {
         // Validate content-type for critical files (ONNX model and config files must not be HTML/error pages).
         if let Some(content_type) = response.headers().get(reqwest::header::CONTENT_TYPE) {
             let ct = content_type.to_str().unwrap_or("");
-            if local_name == "model.onnx" && !ct.contains("application/octet-stream") && !ct.contains("x-application") {
+            if local_name == "model.onnx"
+                && !ct.contains("application/octet-stream")
+                && !ct.contains("x-application")
+            {
                 println!(
                     "  [warning] model.onnx returned Content-Type: {} (expected application/octet-stream)",
                     ct
@@ -388,7 +390,7 @@ pub fn download_model(target: &Path) -> Result<()> {
         // Verify SHA-256 checksum if provided via env.
         if let Some(expected_hash) = expected_checksums.get(local_name) {
             let digest = sha256_hex(&bytes);
-            if &digest[..] != *expected_hash {
+            if digest[..] != expected_hash[..] {
                 anyhow::bail!(
                     "Checksum mismatch for {}: expected {}, got {}",
                     local_name,

@@ -78,7 +78,8 @@ impl TranscriptComponent {
                 })
                 .collect();
 
-            let list = List::new(items).highlight_style(Style::default().bg(self.colors.highlight_bg));
+            let list =
+                List::new(items).highlight_style(Style::default().bg(self.colors.highlight_bg));
             frame.render_widget(list, results_rect);
         }
 
