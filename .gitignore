@@ -16,6 +16,7 @@
 Thumbs.db
 
 # Cache and model files
+Download/
 .fastembed_cache/
 .rustrag/
 crates/*/.rustrag/

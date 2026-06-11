@@ -77,15 +77,7 @@ fn model_dir() -> PathBuf {
         return hf_dir;
     }
 
-    // 4) Project-local Download/ (for development / bundled builds)
-    let start = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    for ancestor in start.ancestors() {
-        if ancestor.join("Download").join("model.onnx").exists() {
-            return ancestor.join("Download");
-        }
-    }
-
-    // 5) Absolute fallback — will fail gracefully on init with a clear error message
+    // 4) Absolute fallback — will fail gracefully on init with a clear error message
     PathBuf::from("/usr/local/share/rustrag/models")
 }
 
