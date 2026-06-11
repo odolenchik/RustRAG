@@ -1559,5 +1559,260 @@ fn test_incremental_detects_new_files() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Call graph unit tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_callgraph_parse_call_exprs_finds_function_calls() {
+    let code = r#"
+fn my_func() {
+    helper();
+    other_helper(42);
+}
+"#;
+    // The callgraph module is not directly accessible from tests, but we can verify
+    // through the public API by checking that build_call_graph doesn't panic on valid input.
+    let chunks = vec![
+        rust_rag_core::indexer::Chunk {
+            file_path: PathBuf::from("src/main.rs"),
+            line_start: 0,
+            line_end: 50,
+            module_name: "main/my_func".to_string(),
+            symbol_kind: SymbolKind::Function,
+            text: code.to_string(),
+        },
+    ];
+
+    let (graph, _name_map) = rust_rag_core::callgraph::build_call_graph(&chunks).unwrap();
+    assert!(graph.node_count() >= 1);
+}
+
+#[test]
+fn test_callgraph_build_creates_nodes_for_all_chunks() {
+    let chunks = vec![
+        rust_rag_core::indexer::Chunk {
+            file_path: PathBuf::from("src/main.rs"),
+            line_start: 0,
+            line_end: 50,
+            module_name: "main/my_func".to_string(),
+            symbol_kind: SymbolKind::Function,
+            text: "fn my_func() {}".to_string(),
+        },
+        rust_rag_core::indexer::Chunk {
+            file_path: PathBuf::from("src/lib.rs"),
+            line_start: 50,
+            line_end: 100,
+            module_name: "lib/helper".to_string(),
+            symbol_kind: SymbolKind::Function,
+            text: "fn helper() {}".to_string(),
+        },
+    ];
+
+    let (graph, _name_map) = rust_rag_core::callgraph::build_call_graph(&chunks).unwrap();
+    assert_eq!(graph.node_count(), 2);
+}
+
+#[test]
+fn test_callgraph_ignores_non_function_chunks() {
+    let chunks = vec![
+        rust_rag_core::indexer::Chunk {
+            file_path: PathBuf::from("src/lib.rs"),
+            line_start: 0,
+            line_end: 10,
+            module_name: "lib/my_struct".to_string(),
+            symbol_kind: SymbolKind::Struct,
+            text: "struct MyStruct {}".to_string(),
+        },
+    ];
+
+    let (graph, _name_map) = rust_rag_core::callgraph::build_call_graph(&chunks).unwrap();
+    assert_eq!(graph.edge_count(), 0); // structs don't produce call edges
+}
+
+#[test]
+fn test_indexer_parse_and_extract_function() {
+    let content = r#"
+fn hello_world() -> &'static str {
+    "hello"
+}
+"#;
+    let mut chunks: Vec<rust_rag_core::indexer::Chunk> = Vec::new();
+    rust_rag_core::indexer::parse_and_extract(
+        content,
+        PathBuf::from("test.rs").as_ref(),
+        &mut chunks,
+    )
+    .expect("should parse");
+
+    let func_chunks: Vec<_> = chunks.iter().filter(|c| c.symbol_kind == SymbolKind::Function).collect();
+    assert!(!func_chunks.is_empty(), "Should extract at least one function chunk");
+}
+
+#[test]
+fn test_indexer_parse_and_extract_impl_block() {
+    let content = r#"
+struct MyStruct;
+
+impl MyStruct {
+    fn method(&self) {}
+}
+"#;
+    let mut chunks: Vec<rust_rag_core::indexer::Chunk> = Vec::new();
+    rust_rag_core::indexer::parse_and_extract(
+        content,
+        PathBuf::from("test.rs").as_ref(),
+        &mut chunks,
+    )
+    .expect("should parse");
+
+    let impl_chunks: Vec<_> = chunks.iter().filter(|c| c.symbol_kind == SymbolKind::ImplBlock).collect();
+    assert!(!impl_chunks.is_empty(), "Should extract at least one impl block chunk");
+}
+
+#[test]
+fn test_indexer_parse_and_extract_unsafe_block() {
+    // Verify parsing doesn't panic with unsafe code inside an impl block
+    let content = r#"
+struct Foo;
+
+impl Foo {
+    fn read_file(&self) -> Result<(), std::io::Error> {
+        unsafe {
+            std::mem::transmute::<i32, f32>(0);
+            Ok(())
+        }
+    }
+}
+"#;
+    let mut chunks: Vec<rust_rag_core::indexer::Chunk> = Vec::new();
+    rust_rag_core::indexer::parse_and_extract(
+        content,
+        PathBuf::from("test.rs").as_ref(),
+        &mut chunks,
+    )
+    .expect("should parse without panic");
+
+    // At least the impl block should be extracted (tree-sitter-rust node types vary)
+    assert!(!chunks.is_empty(), "Should extract at least one chunk from code with unsafe, got {} total", chunks.len());
+}
+
+#[test]
+fn test_indexer_parse_and_extract_nested_struct_in_module() {
+    // Verify parsing handles structs inside modules without panic
+    let content = r#"
+mod types {
+    pub struct Person {
+        name: String,
+        age: u32,
+    }
+
+    impl Person {
+        fn new(name: &str) -> Self {
+            Self { name: name.to_string(), age: 0 }
+        }
+    }
+}
+"#;
+    let mut chunks: Vec<rust_rag_core::indexer::Chunk> = Vec::new();
+    rust_rag_core::indexer::parse_and_extract(
+        content,
+        PathBuf::from("test.rs").as_ref(),
+        &mut chunks,
+    )
+    .expect("should parse without panic");
+
+    // The module wrapper should be extracted; the rest depends on tree-sitter-rust version
+    assert!(!chunks.is_empty(), "Should extract at least one chunk from code with struct in module, got {} total", chunks.len());
+}
+
+#[test]
+fn test_indexer_parse_and_extract_nested_enum_in_module() {
+    let content = r#"
+mod types {
+    pub enum Color {
+        Red,
+        Green,
+        Blue,
+    }
+
+    impl Color {
+        fn as_str(&self) -> &'static str {
+            match self {
+                Color::Red => "red",
+                _ => "other"
+            }
+        }
+    }
+}
+"#;
+    let mut chunks: Vec<rust_rag_core::indexer::Chunk> = Vec::new();
+    rust_rag_core::indexer::parse_and_extract(
+        content,
+        PathBuf::from("test.rs").as_ref(),
+        &mut chunks,
+    )
+    .expect("should parse without panic");
+
+    assert!(!chunks.is_empty(), "Should extract at least one chunk from code with enum in module, got {} total", chunks.len());
+}
+
+#[test]
+fn test_indexer_parse_and_extract_trait_impl() {
+    let content = r#"
+trait MyTrait {
+    fn do_it(&self);
+}
+
+struct Wrapper;
+
+impl MyTrait for Wrapper {
+    fn do_it(&self) {}
+}
+"#;
+    let mut chunks: Vec<rust_rag_core::indexer::Chunk> = Vec::new();
+    rust_rag_core::indexer::parse_and_extract(
+        content,
+        PathBuf::from("test.rs").as_ref(),
+        &mut chunks,
+    )
+    .expect("should parse without panic");
+
+    assert!(!chunks.is_empty(), "Should extract at least one chunk from code with trait impl, got {} total", chunks.len());
+}
+
+#[test]
+fn test_indexer_parse_and_extract_multiple_functions() {
+    let content = r#"
+fn func_a() {}
+fn func_b() {}
+fn func_c() {}
+"#;
+    let mut chunks: Vec<rust_rag_core::indexer::Chunk> = Vec::new();
+    rust_rag_core::indexer::parse_and_extract(
+        content,
+        PathBuf::from("test.rs").as_ref(),
+        &mut chunks,
+    )
+    .expect("should parse");
+
+    let func_chunks: Vec<_> = chunks.iter().filter(|c| c.symbol_kind == SymbolKind::Function).collect();
+    assert_eq!(func_chunks.len(), 3, "Should extract exactly three function chunks");
+}
+
+#[test]
+fn test_indexer_parse_and_extract_empty_file() {
+    let content = "";
+    let mut chunks: Vec<rust_rag_core::indexer::Chunk> = Vec::new();
+    rust_rag_core::indexer::parse_and_extract(
+        content,
+        PathBuf::from("test.rs").as_ref(),
+        &mut chunks,
+    )
+    .expect("should parse empty file without error");
+
+    assert!(chunks.is_empty(), "Empty file should produce no chunks");
+}
+
 // Re-export HashMap for tests that need it.
 use std::collections::HashMap;

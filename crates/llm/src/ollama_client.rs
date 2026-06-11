@@ -196,7 +196,7 @@ impl LlmClient {
 
         let endpoint = endpoint.unwrap_or_else(|| "http://localhost:8080".to_string());
         let model = model.unwrap_or_else(|| {
-            "Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-IQ3_M.gguf".to_string()
+            "default-rag-model".to_string()
         });
 
         LlmClient::new(&endpoint, &model)

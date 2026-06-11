@@ -1,3 +1,4 @@
+use crate::theme::Colors;
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 use rust_rag_core::vector_store::SearchResult;
@@ -11,6 +12,7 @@ pub struct TranscriptComponent {
     pub llm_answer: Option<String>,
     pub llm_partial_answer: String,
     pub llm_scroll_offset: usize,
+    pub colors: Colors,
 }
 
 impl TranscriptComponent {
@@ -32,11 +34,11 @@ impl TranscriptComponent {
             let block = Block::default()
                 .title(" Error ")
                 .borders(Borders::ALL)
-                .style(Style::default().fg(Color::Red));
+                .style(Style::default().fg(self.colors.error_border));
             frame.render_widget(block, area);
 
             let error_paragraph = Paragraph::new(Span::raw(format!("! {}", err)))
-                .style(Style::default().fg(Color::Yellow));
+                .style(Style::default().fg(self.colors.error_fg));
             frame.render_widget(error_paragraph, area);
             return;
         }
@@ -76,7 +78,7 @@ impl TranscriptComponent {
                 })
                 .collect();
 
-            let list = List::new(items).highlight_style(Style::default().bg(Color::DarkGray));
+            let list = List::new(items).highlight_style(Style::default().bg(self.colors.highlight_bg));
             frame.render_widget(list, results_rect);
         }
 
@@ -99,19 +101,19 @@ impl TranscriptComponent {
                 super::LlmState::Loading if !self.llm_partial_answer.is_empty() => {
                     let display_text = format!("\u{258A} {}", self.llm_partial_answer);
                     let llm_paragraph = Paragraph::new(Span::raw(display_text))
-                        .style(Style::default().fg(Color::Green));
+                        .style(Style::default().fg(self.colors.loading_fg));
                     frame.render_widget(llm_paragraph, llm_rect);
                 }
                 super::LlmState::Loading => {
                     let loading_text = Paragraph::new(Span::raw("  LLM is thinking..."))
-                        .style(Style::default().fg(Color::Yellow));
+                        .style(Style::default().fg(self.colors.loading_fg));
                     frame.render_widget(loading_text, llm_rect);
                 }
                 super::LlmState::Done => {
                     let ans_block = Block::default()
                         .title(" LLM Answer ")
                         .borders(Borders::ALL)
-                        .style(Style::default().fg(Color::Green));
+                        .style(Style::default().fg(self.colors.answer_border));
                     frame.render_widget(ans_block, llm_rect);
 
                     if let Some(answer) = &self.llm_answer {
@@ -138,7 +140,7 @@ impl TranscriptComponent {
                         };
 
                         let llm_paragraph = Paragraph::new(Span::raw(full_display))
-                            .style(Style::default().fg(Color::Green));
+                            .style(Style::default().fg(self.colors.answer_fg));
                         frame.render_widget(llm_paragraph, llm_rect);
                     }
                 }
@@ -146,7 +148,7 @@ impl TranscriptComponent {
                     let err_block = Block::default()
                         .title(" LLM Error ")
                         .borders(Borders::ALL)
-                        .style(Style::default().fg(Color::Red));
+                        .style(Style::default().fg(self.colors.error_border));
                     frame.render_widget(err_block, llm_rect);
 
                     if let Some(ref err_msg) = self.llm_answer {
@@ -166,7 +168,7 @@ impl TranscriptComponent {
                         };
 
                         let llm_err = Paragraph::new(Span::raw(display_text))
-                            .style(Style::default().fg(Color::Red));
+                            .style(Style::default().fg(self.colors.error_fg));
                         frame.render_widget(llm_err, llm_rect);
                     }
                 }

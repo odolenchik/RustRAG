@@ -25,3 +25,7 @@ futures-util = "0.3"
 
 rust-rag-llm = { path = "../llm" }
 reqwest = "0.12"
+
+[dev-dependencies]
+tempfile = "3"
+url = "2"

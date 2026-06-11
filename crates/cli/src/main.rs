@@ -124,16 +124,22 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Command::Index(args) => {
+            let workspace = std::fs::canonicalize(&args.path)
+                .map_err(|e| anyhow::anyhow!("Invalid workspace path '{}': {}", args.path, e))?;
             if args.force {
-                let store_path = std::path::PathBuf::from(&args.path).join(".rustrag");
+                let store_path = workspace.join(".rustrag");
                 if store_path.exists() {
                     println!("Removing old index at {}", store_path.display());
                     std::fs::remove_dir_all(&store_path)?;
                 }
             }
-            rust_rag_cli::index_workspace(&args.path)
+            rust_rag_cli::index_workspace(workspace.to_str().unwrap())
         }
-        Command::Reindex(args) => rust_rag_cli::reindex_workspace(&args.path),
+        Command::Reindex(args) => {
+            let workspace = std::fs::canonicalize(&args.path)
+                .map_err(|e| anyhow::anyhow!("Invalid workspace path '{}': {}", args.path, e))?;
+            rust_rag_cli::reindex_workspace(workspace.to_str().unwrap())
+        }
         Command::Info(args) => {
             let path: Option<String> = resolve_workspace_path(args.path.as_deref())?
                 .map(|p| p.to_string_lossy().to_string());

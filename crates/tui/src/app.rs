@@ -5,6 +5,8 @@ use rust_rag_llm::ChatBackend;
 use std::sync::LazyLock;
 use std::time::Duration;
 
+use crate::theme::Colors;
+
 // Re-export for backward compatibility
 pub use super::ui::LlmState;
 
@@ -15,6 +17,9 @@ static TUI_RT: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
         .build()
         .expect("Failed to create shared Tokio runtime for TUI")
 });
+
+/// Shared colour palette for the TUI (dark theme by default).
+static COLORS: LazyLock<Colors> = LazyLock::new(Colors::default);
 
 /// Load top_k from config (defaults to 5).
 fn load_top_k(workspace_root: &std::path::Path) -> usize {
@@ -138,32 +143,30 @@ impl App {
             .join("\n\n");
         let full_message = format!("Question: {}\n\nRelevant code:\n{}", query, context);
 
-        std::thread::spawn(move || {
+        // Spawn an async task on the shared current-thread runtime.
+        TUI_RT.spawn(async move {
             // LLM client reads endpoint/model from .rustrag.toml (via Config::find())
-            // Use the shared runtime instead of creating a new one per request.
             let client = rust_rag_llm::ollama_client::LlmClient::from_config();
 
-            TUI_RT.block_on(async {
-                let mut stream = client.complete_stream_chunks(system_prompt, &full_message);
-                loop {
-                    let chunk_result = futures_util::stream::StreamExt::next(&mut stream).await;
-                    match chunk_result {
-                        Some(Ok(text)) => {
-                            // Send partial text to TUI for live display
-                            if tx2.send(TuiEvent::LlmChunk(text)).is_err() {
-                                break;
-                            }
-                        }
-                        Some(Err(e)) => {
-                            let _ = tx2.send(TuiEvent::LlmError(format!("{}", e)));
+            let mut stream = client.complete_stream_chunks(system_prompt, &full_message);
+            loop {
+                let chunk_result = futures_util::stream::StreamExt::next(&mut stream).await;
+                match chunk_result {
+                    Some(Ok(text)) => {
+                        // Send partial text to TUI for live display.
+                        if tx2.send(TuiEvent::LlmChunk(text)).is_err() {
                             break;
                         }
-                        None => break, // stream exhausted — done normally
                     }
+                    Some(Err(e)) => {
+                        let _ = tx2.send(TuiEvent::LlmError(format!("{}", e)));
+                        break;
+                    }
+                    None => break, // stream exhausted — done normally
                 }
-            });
+            }
 
-            // After stream completes, send final Done event with accumulated answer
+            // After stream completes, send final Done event with accumulated answer.
             let _ = tx2.send(TuiEvent::LlmDone);
         });
     }
@@ -276,13 +279,13 @@ impl App {
         .split(frame.area());
 
         // --- Title bar ---
-        let title = Span::styled(
-            " RustRAG - Interactive Chat ",
-            Style::default().fg(Color::White).bg(Color::Blue),
-        );
+        let title_style = Style::default()
+            .fg(COLORS.title_fg)
+            .bg(COLORS.title_bg);
+        let title = Span::styled(" RustRAG - Interactive Chat ", title_style);
         frame.render_widget(title, main_chunks[0]);
 
-        // --- Output area: delegate to transcript component ---
+       // --- Output area: delegate to transcript component ---
         let transcript_data = super::ui::transcript::TranscriptComponent {
             error_msg: self.error_msg.clone(),
             search_results: std::mem::take(&mut self.search_results),
@@ -291,6 +294,7 @@ impl App {
             llm_answer: self.llm_answer.clone(),
             llm_partial_answer: std::mem::take(&mut self.llm_partial_answer),
             llm_scroll_offset: self.llm_scroll_offset,
+            colors: *COLORS,
         };
         transcript_data.draw(frame, main_chunks[1]);
 
@@ -302,6 +306,7 @@ impl App {
         // --- Input line: delegate to editor component ---
         let editor_data = super::ui::editor::EditorComponent {
             query: std::mem::take(&mut self.query),
+            colors: *COLORS,
         };
         editor_data.draw(frame, main_chunks[2]);
         self.query = editor_data.query;

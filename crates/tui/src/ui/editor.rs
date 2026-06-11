@@ -1,3 +1,4 @@
+use crate::theme::Colors;
 use crossterm::event::KeyCode;
 use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
@@ -5,14 +6,15 @@ use ratatui::widgets::Paragraph;
 /// Renders the query input line.
 pub struct EditorComponent {
     pub query: String,
+    pub colors: Colors,
 }
 
 impl EditorComponent {
     /// Render the input line with prompt and cursor positioning.
     pub fn draw(&self, frame: &mut Frame, area: Rect) {
         let prompt_text = format!("> {}", self.query);
-        let input_paragraph =
-            Paragraph::new(Span::raw(prompt_text)).style(Style::default().fg(Color::Yellow));
+        let prompt_style = Style::default().fg(self.colors.input_prompt);
+        let input_paragraph = Paragraph::new(Span::raw(prompt_text)).style(prompt_style);
         frame.render_widget(input_paragraph, area);
 
         // Position cursor at end of typed query

@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
-use std::io::Write;
+use std::fmt::Write as FmtWrite;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
@@ -263,6 +263,7 @@ impl EmbedCache {
     }
 
     /// Write new embeddings for previously uncached entries. Returns the count of cached hits.
+    /// Uses atomic file replacement (write to temp, then rename) to prevent corruption on crash.
     pub fn write_back(
         &self,
         texts: &[&str],
@@ -282,21 +283,19 @@ impl EmbedCache {
             }
         }
 
-        let file = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&self.path)?;
-        let mut writer = std::io::BufWriter::new(file);
-
-        // Write model_id marker as first line
-        writeln!(writer, "#model_id={}", Self::model_id())?;
-
+        // Build content in memory first (complete, consistent representation)
+        let mut content = String::with_capacity(4096);
+        writeln!(content, "#model_id={}", Self::model_id())?;
         for (k, v) in &cache {
             let line = serde_json::json!({ "hash": k, "embedding": v });
-            writeln!(writer, "{}", serde_json::to_string(&line).unwrap())?;
+            writeln!(content, "{}", serde_json::to_string(&line).unwrap())?;
         }
-        writer.flush()?;
+
+        // Atomic write: write to temp file first, then rename (POSIX atomic)
+        let tmp_path = self.path.with_extension("jsonl.tmp");
+        std::fs::write(&tmp_path, &content)?;
+        std::fs::rename(&tmp_path, &self.path)?;
+
         Ok(())
     }
 
@@ -321,6 +320,7 @@ pub fn model_cache_dir() -> Result<PathBuf> {
 }
 
 /// Download the bge-small-en-v1.5 model files from HuggingFace and save them to a target directory.
+/// Verifies SHA-256 checksums if RUSRAG_MODEL_CHECKSUMS env var is set (newline-separated `sha256:filename` pairs).
 pub fn download_model(target: &Path) -> Result<()> {
     let repo = "BAAI/bge-small-en-v1.5";
     let revision = "main";
@@ -336,13 +336,17 @@ pub fn download_model(target: &Path) -> Result<()> {
     ];
 
     let client = reqwest::blocking::Client::builder()
-        .user_agent("RustRag/0.7.9")
+        .user_agent("RustRag/0.7.14")
         .redirect(reqwest::redirect::Policy::limited(10))
         .build()?;
 
+    // Parse optional checksum overrides from env (e.g. "sha256:model.onnx=<hash>")
+    let expected_checksums: std::collections::HashMap<String, String> =
+        parse_expected_checksums();
+
     std::fs::create_dir_all(target)?;
 
-    for (remote_path, local_name) in &files {
+    for &(remote_path, local_name) in &files {
         println!("Downloading {}...", remote_path);
         let url = format!(
             "https://huggingface.co/{}/resolve/{}/{}",
@@ -358,15 +362,73 @@ pub fn download_model(target: &Path) -> Result<()> {
             );
         }
 
+        // Validate content-type for critical files (ONNX model and config files must not be HTML/error pages).
+        if let Some(content_type) = response.headers().get(reqwest::header::CONTENT_TYPE) {
+            let ct = content_type.to_str().unwrap_or("");
+            if local_name == "model.onnx" && !ct.contains("application/octet-stream") && !ct.contains("x-application") {
+                println!(
+                    "  [warning] model.onnx returned Content-Type: {} (expected application/octet-stream)",
+                    ct
+                );
+            } else if (local_name.ends_with(".json")) && !ct.contains("application/json") {
+                println!(
+                    "  [warning] {} returned Content-Type: {} (expected application/json)",
+                    local_name, ct
+                );
+            }
+        }
+
         let bytes = response.bytes()?;
         println!(
             "  -> {} ({} bytes)",
             local_name,
             bytes.len().try_into().unwrap_or(u64::MAX)
         );
+
+        // Verify SHA-256 checksum if provided via env.
+        if let Some(expected_hash) = expected_checksums.get(local_name) {
+            let digest = sha256_hex(&bytes);
+            if &digest[..] != *expected_hash {
+                anyhow::bail!(
+                    "Checksum mismatch for {}: expected {}, got {}",
+                    local_name,
+                    expected_hash,
+                    digest
+                );
+            } else {
+                println!("  ✓ Checksum OK");
+            }
+        }
+
         std::fs::write(target.join(local_name), &bytes)?;
     }
 
     println!("Model files saved to: {}", target.display());
     Ok(())
+}
+
+/// Parse RUSRAG_MODEL_CHECKSUMS env var.
+/// Format: newline-separated `sha256:<filename>=<hex-digest>` lines.
+fn parse_expected_checksums() -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    if let Ok(val) = std::env::var("RUSRAG_MODEL_CHECKSUMS") {
+        for line in val.lines().filter(|l| !l.trim().is_empty()) {
+            // Parse "sha256:<filename>=<hash>"
+            if let Some(rest) = line.strip_prefix("sha256:") {
+                if let Some((filename, hash)) = rest.split_once('=') {
+                    if !filename.is_empty() && !hash.is_empty() {
+                        map.insert(filename.trim().to_string(), hash.trim().to_lowercase());
+                    }
+                }
+            }
+        }
+    }
+    map
+}
+
+/// Compute SHA-256 hex digest of binary data.
+fn sha256_hex(data: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    format!("{:x}", hasher.finalize())
 }

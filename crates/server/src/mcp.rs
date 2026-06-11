@@ -240,7 +240,7 @@ fn rag_search_tool(args: &Value, state: &McpState) -> Result<Value> {
     let schema = serde_json::json!({
         "type": "object",
         "properties": {
-            "query": { "type": "string" },
+            "query": { "type": "string", "maxLength": 4096 },
             "top_k": { "type": "integer", "minimum": 1, "maximum": 100 }
         },
         "required": ["query"]
@@ -251,6 +251,13 @@ fn rag_search_tool(args: &Value, state: &McpState) -> Result<Value> {
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("Missing or invalid 'query' argument"))?
         .to_string();
+    if query.len() > 4096 {
+        return Err(anyhow::anyhow!(
+            "Query exceeds maximum length of 4096 characters (got {})",
+            query.len()
+        ));
+    }
+
     let top_k: usize = args["top_k"].as_u64().map(|n| n as usize).unwrap_or(5);
 
     if !(1..=100).contains(&top_k) {
@@ -270,7 +277,7 @@ fn rag_query_tool(args: &Value, state: &McpState) -> Result<Value> {
     let schema = serde_json::json!({
         "type": "object",
         "properties": {
-            "question": { "type": "string" }
+            "question": { "type": "string", "maxLength": 4096 }
         },
         "required": ["question"]
     });
@@ -280,6 +287,13 @@ fn rag_query_tool(args: &Value, state: &McpState) -> Result<Value> {
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("Missing or invalid 'question' argument"))?
         .to_string();
+
+    if question.len() > 4096 {
+        return Err(anyhow::anyhow!(
+            "Question exceeds maximum length of 4096 characters (got {})",
+            question.len()
+        ));
+    }
 
     let config = rust_rag_core::config::Config::find().unwrap_or_default();
     let top_k = config.llm_config().top_k;

@@ -53,12 +53,35 @@ impl VectorStore {
     pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self> {
         let path = path.as_ref();
         std::fs::create_dir_all(path)?;
+        // Restrict directory permissions on Unix systems (owner-only access).
+        #[cfg(unix)]
+        Self::set_restricted_permissions(path);
         Ok(VectorStore {
             path: path.to_path_buf(),
             cache: RwLock::new(None),
             bm25_cache: RwLock::new(None),
         })
     }
+
+    /// Set directory permissions to 0700 (owner-only) on Unix systems.
+    #[cfg(unix)]
+    fn set_restricted_permissions(path: &std::path::Path) {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(e) = std::fs::set_permissions(
+            path,
+            std::fs::Permissions::from_mode(0o700),
+        ) {
+            eprintln!(
+                "[warning] Failed to set restrictive permissions on {}: {}",
+                path.display(),
+                e
+            );
+        }
+    }
+
+    /// No-op on non-Unix platforms (Windows uses ACLs, not POSIX permissions).
+    #[cfg(not(unix))]
+    fn set_restricted_permissions(_path: &std::path::Path) {}
 
     /// Get the default .rustrag path inside a workspace.
     pub fn for_workspace(workspace_root: impl AsRef<std::path::Path>) -> Self {

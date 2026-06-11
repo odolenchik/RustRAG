@@ -16,7 +16,7 @@ use rust_rag_llm::ChatBackend;
 use serde::Deserialize;
 use std::{path::Path, sync::Arc};
 use tokio::sync::Semaphore;
-use tower_http::cors::CorsLayer;
+use tower_http::cors::{AllowOrigin, CorsLayer};
 
 /// Request state shared across handlers.
 pub struct AppState {
@@ -29,6 +29,8 @@ pub struct AppState {
     pub llm_endpoint: String,
     /// Resolved LLM model name (from config / env / default).
     pub llm_model: String,
+    /// Optional API key for Bearer token authentication. Empty string means no auth required.
+    pub api_key: Option<String>,
 }
 
 impl Clone for AppState {
@@ -39,6 +41,7 @@ impl Clone for AppState {
             http_client: std::sync::Arc::clone(&self.http_client),
             llm_endpoint: self.llm_endpoint.clone(),
             llm_model: self.llm_model.clone(),
+            api_key: self.api_key.clone(),
         }
     }
 }
@@ -64,8 +67,15 @@ impl AppState {
                 cfg.as_ref().and_then(|c| c.llm_config().model.clone())
             })
             .unwrap_or_else(|| {
-                "Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-IQ3_M.gguf".to_string()
+                "default-rag-model".to_string()
             })
+    }
+
+    /// Resolve optional API key from RUSRAG_API_KEY env var.
+    fn resolve_api_key() -> Option<String> {
+        std::env::var("RUSRAG_API_KEY")
+            .ok()
+            .filter(|key| !key.is_empty())
     }
 
     /// Create app state from a workspace root that has an index.
@@ -84,6 +94,7 @@ impl AppState {
             http_client: rust_rag_llm::ollama_client::LlmClient::shared_http_client(),
             llm_endpoint: Self::resolve_endpoint(),
             llm_model: Self::resolve_model(),
+            api_key: Self::resolve_api_key(),
         })
     }
 
@@ -96,6 +107,7 @@ impl AppState {
             http_client: rust_rag_llm::ollama_client::LlmClient::shared_http_client(),
             llm_endpoint: Self::resolve_endpoint(),
             llm_model: Self::resolve_model(),
+            api_key: Self::resolve_api_key(),
         })
     }
 }
@@ -112,9 +124,43 @@ fn default_top_k() -> usize {
     5
 }
 
+/// Extract the Bearer token from the Authorization header, if present.
+fn extract_bearer_token(headers: &axum::http::HeaderMap) -> Option<String> {
+    headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|h| h.to_str().ok())
+        .and_then(|h| h.strip_prefix("Bearer "))
+        .map(|s| s.to_string())
+}
+
+/// Enforce Bearer token auth on a request. Returns 401 if unauthorized, or None if authorized/public.
+fn enforce_auth(headers: &axum::http::HeaderMap, api_key: &Option<String>, path: &str) -> Option<StatusCode> {
+    // /status is always public — no auth required
+    if path == "/status" {
+        return None;
+    }
+
+    let expected = match api_key {
+        Some(key) => key.as_str(),
+        None => return None, // no API key configured — auth disabled globally
+    };
+
+    let provided = extract_bearer_token(headers);
+    if provided.as_deref() != Some(expected) {
+        return Some(StatusCode::UNAUTHORIZED);
+    }
+
+    None // authorized
+}
+
 /// Build the API router.
 pub fn build_router(state: AppState) -> Router {
-    let cors = CorsLayer::permissive();
+    // Restrictive CORS: only allow same-origin requests (local dev / IDE plugins)
+    let cors = CorsLayer::new()
+        .allow_origin(AllowOrigin::exact(
+            axum::http::HeaderValue::from_static("http://127.0.0.1"),
+        ))
+        .allow_methods(vec![axum::http::Method::GET, axum::http::Method::POST]);
 
     Router::new()
         .route("/status", get(status_handler))
@@ -125,28 +171,32 @@ pub fn build_router(state: AppState) -> Router {
         .with_state(state)
 }
 
-/// GET /status — returns index metadata.
+
+/// GET /status — returns index metadata (no sensitive paths exposed).
 async fn status_handler(state: axum::extract::State<AppState>) -> JsonResponse<serde_json::Value> {
-    let index_path = state.0.store.path.join("index.jsonl");
-    let content = if index_path.exists() {
-        std::fs::read_to_string(&index_path).unwrap_or_default()
-    } else {
-        String::new()
+    let content = match std::fs::read_to_string(state.0.store.path.join("index.jsonl")) {
+        Ok(c) => c,
+        Err(_) => String::new(),
     };
     let total_chunks = content.lines().filter(|l| !l.trim().is_empty()).count();
 
     JsonResponse(serde_json::json!({
-        "workspace_root": state.0.store.path.display().to_string(),
         "total_chunks": total_chunks,
-        "index_path": index_path.to_str().unwrap_or(""),
+        "endpoint": state.0.llm_endpoint.clone(),
     }))
 }
 
 /// POST /search — semantic search over indexed chunks (no LLM).
 async fn search_handler(
     state: axum::extract::State<AppState>,
+    headers: axum::http::HeaderMap,
     Query(params): Query<SearchQuery>,
 ) -> Result<JsonResponse<serde_json::Value>, StatusCode> {
+    // Enforce Bearer token auth when API key is configured
+    if let Some(unauth_status) = enforce_auth(&headers, &state.api_key, "/search") {
+        return Err(unauth_status);
+    }
+
     if state.rate_limiter.clone().try_acquire_owned().is_err() {
         return Err(StatusCode::TOO_MANY_REQUESTS);
     }
@@ -170,8 +220,14 @@ async fn search_handler(
 /// POST /query — full RAG: search + LLM answer with citations.
 async fn query_handler(
     state: axum::extract::State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<QueryBody>,
 ) -> Result<JsonResponse<serde_json::Value>, StatusCode> {
+    // Enforce Bearer token auth when API key is configured
+    if let Some(unauth_status) = enforce_auth(&headers, &state.api_key, "/query") {
+        return Err(unauth_status);
+    }
+
     if state.rate_limiter.clone().try_acquire_owned().is_err() {
         return Err(StatusCode::TOO_MANY_REQUESTS);
     }
@@ -253,8 +309,24 @@ struct QueryStreamQuery {
 
 async fn query_stream_handler(
     state: axum::extract::State<AppState>,
+    headers: axum::http::HeaderMap,
     Query(params): Query<QueryStreamQuery>,
 ) -> axum::response::Response {
+    // Enforce Bearer token auth when API key is configured
+    if let Some(unauth_status) = enforce_auth(&headers, &state.api_key, "/query/stream") {
+        return axum::response::Response::builder()
+            .status(unauth_status)
+            .body(Body::empty())
+            .unwrap();
+    }
+
+    if state.0.rate_limiter.clone().try_acquire_owned().is_err() {
+        return axum::response::Response::builder()
+            .status(axum::http::StatusCode::TOO_MANY_REQUESTS)
+            .body(Body::empty())
+            .unwrap();
+    }
+
     let config = config::Config::find().unwrap_or_default();
     let top_k = config.llm_config().top_k;
 

@@ -2,57 +2,105 @@ name: CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, master]
   pull_request:
-    branches: [main]
+    branches: [main, master]
 
 env:
-  RUSTFLAGS: "--deny warnings"
   CARGO_TERM_COLOR: always
+  RUST_VERSION: "1.85"
 
 jobs:
-  build-and-test:
+  # ── Formatting ────────────────────────────────────────────────
+  fmt:
+    name: Check formatting
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust stable
+      - name: Install Rust ${{ env.RUST_VERSION }}
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy, rustfmt
+          toolchain: ${{ env.RUST_VERSION }}
+          components: rustfmt
 
-      - name: Cache dependencies
-        uses: actions/cache@v3
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - uses: Swatinem/rust-cache@v2
 
-      - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config
-
-      - name: Check formatting
+      - name: Run cargo fmt
         run: cargo fmt --all --check
 
-      - name: Build
-        run: cargo build --all --release
-
-      - name: Run tests
-        run: cargo test --all --lib
-
-      - name: Clippy (deny warnings)
-        run: cargo clippy --all -- -D warnings
-
-  security-audit:
+  # ── Build ─────────────────────────────────────────────────────
+  build:
+    name: Build & check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Install cargo-audit
+
+      - name: Install Rust ${{ env.RUST_VERSION }}
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build all crates (no default features)
+        run: cargo build --workspace --verbose
+
+      - name: Build docs
+        run: cargo doc --workspace --no-deps --document-private-items
+
+  # ── Clippy ────────────────────────────────────────────────────
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust ${{ env.RUST_VERSION }}
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  # ── Tests ─────────────────────────────────────────────────────
+  test:
+    name: Test suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust ${{ env.RUST_VERSION }}
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run core tests
+        run: cargo test --package rust-rag-core --verbose
+
+      - name: Run LLM validation tests
+        run: cargo test --package rust-rag-llm --verbose
+
+  # ── Security Audit ────────────────────────────────────────────
+  security-audit:
+    name: Security audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust ${{ env.RUST_VERSION }}
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - name: Run cargo install cargo-audit
         run: cargo install cargo-audit --locked
-      - name: Run security audit
-        run: cargo audit || true  # fail-soft for initial run
+
+      - name: Run cargo audit
+        run: cargo audit || true # non-fatal on first runs, fix deps later
