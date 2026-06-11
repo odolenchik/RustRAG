@@ -1,4 +1,4 @@
-# RustRAG v0.7.9
+# RustRAG v0.7.14
 
 **Local RAG for Rust codebases — full offline embeddings, hybrid BM25+vector search, MCP server.**
 

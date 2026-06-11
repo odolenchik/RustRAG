@@ -15,7 +15,7 @@ We take the security of RustRag seriously. If you believe you've found a securit
 
 **DO NOT** open a public GitHub issue for security vulnerabilities. Instead, choose one of these options:
 
-1. **Email**: Send details to `security@example.com` (replace with actual contact)
+1. **Email**: Send details to `odolenchik@gmail.com`
 2. **GitHub Security Advisories**: Use [Private Vulnerability Reporting](https://docs.github.com/en/code-security/security-advisories/guidance-on-reporting-and-writing/privately-reporting-a-vulnerability) via the "Security" tab
 
 ### What to Include
@@ -69,4 +69,4 @@ We run `cargo audit --deny warnings` as part of our CI pipeline to check for kno
 
 ## Contact
 
-For any security-related questions, contact: `security@example.com`
+For any security-related questions, contact: `odolenchik@gmail.com`
