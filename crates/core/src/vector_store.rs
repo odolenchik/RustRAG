@@ -357,28 +357,42 @@ impl VectorStore {
                 }
             }
 
-            results.push(SearchResult {
-                id: doc["id"].as_str().unwrap_or("").to_string(),
-                file_path: PathBuf::from(doc["file_path"].as_str().unwrap_or("")),
-                line_start: doc["line_start"].as_u64().unwrap_or(0) as usize,
-                line_end: doc["line_end"].as_u64().unwrap_or(0) as usize,
-                module_name: doc["module_name"].as_str().unwrap_or("").to_string(),
-                symbol_kind: doc["symbol_kind"]
-                    .as_str()
-                    .map(|s| match s.to_lowercase().as_str() {
-                        "function" => SymbolKind::Function,
-                        "implblock" => SymbolKind::ImplBlock,
-                        "unsaferegion" => SymbolKind::UnsafeRegion,
-                        "traitimpl" => SymbolKind::TraitImpl,
-                        "module" => SymbolKind::Module,
-                        "struct" => SymbolKind::Struct,
-                        "enum" => SymbolKind::Enum,
-                        "macro" => SymbolKind::Macro,
-                        _ => panic!("Unknown SymbolKind in index: {}", s),
-                    }),
-                text: doc["text"].as_str().unwrap_or("").to_string(),
-                score: vec_sim,
-            });
+                let doc_id_for_err = doc["id"].as_str().unwrap_or("").to_string();
+                let file_path_for_err = doc["file_path"].as_str().unwrap_or("").to_string();
+
+                let symbol_kind = match doc["symbol_kind"].as_str() {
+                    Some(s) => {
+                        let kind = match s.to_lowercase().as_str() {
+                            "function" => SymbolKind::Function,
+                            "implblock" => SymbolKind::ImplBlock,
+                            "unsaferegion" => SymbolKind::UnsafeRegion,
+                            "traitimpl" => SymbolKind::TraitImpl,
+                            "module" => SymbolKind::Module,
+                            "struct" => SymbolKind::Struct,
+                            "enum" => SymbolKind::Enum,
+                            "macro" => SymbolKind::Macro,
+                            _ => anyhow::bail!(
+                                "Unknown SymbolKind in index: {} (doc id: {}, file: {})",
+                                s,
+                                doc_id_for_err,
+                                file_path_for_err
+                            ),
+                        };
+                        Some(kind)
+                    }
+                    None => None,
+                };
+
+                results.push(SearchResult {
+                    id: doc["id"].as_str().unwrap_or("").to_string(),
+                    file_path: PathBuf::from(doc["file_path"].as_str().unwrap_or("")),
+                    line_start: doc["line_start"].as_u64().unwrap_or(0) as usize,
+                    line_end: doc["line_end"].as_u64().unwrap_or(0) as usize,
+                    module_name: doc["module_name"].as_str().unwrap_or("").to_string(),
+                    symbol_kind,
+                    text: doc["text"].as_str().unwrap_or("").to_string(),
+                    score: vec_sim,
+                });
         }
 
         Ok(results)
@@ -569,6 +583,21 @@ impl SearchFilters {
 
 pub use crate::indexer::SymbolKind;
 
+/// Parse a SymbolKind from its lowercase string representation.
+fn parse_symbol_kind(s: &str) -> anyhow::Result<SymbolKind> {
+    match s.to_lowercase().as_str() {
+        "function" => Ok(SymbolKind::Function),
+        "implblock" => Ok(SymbolKind::ImplBlock),
+        "unsaferegion" => Ok(SymbolKind::UnsafeRegion),
+        "traitimpl" => Ok(SymbolKind::TraitImpl),
+        "module" => Ok(SymbolKind::Module),
+        "struct" => Ok(SymbolKind::Struct),
+        "enum" => Ok(SymbolKind::Enum),
+        "macro" => Ok(SymbolKind::Macro),
+        other => anyhow::bail!("Unknown SymbolKind in index: {}", other),
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SearchResult {
     pub id: String,
@@ -606,17 +635,10 @@ impl<'de> Deserialize<'de> for SearchResult {
             line_start: helper.line_start,
             line_end: helper.line_end,
             module_name: helper.module_name,
-            symbol_kind: helper.symbol_kind.map(|s| match s.to_lowercase().as_str() {
-                "function" => SymbolKind::Function,
-                "implblock" => SymbolKind::ImplBlock,
-                "unsaferegion" => SymbolKind::UnsafeRegion,
-                "traitimpl" => SymbolKind::TraitImpl,
-                "module" => SymbolKind::Module,
-                "struct" => SymbolKind::Struct,
-                "enum" => SymbolKind::Enum,
-                "macro" => SymbolKind::Macro,
-                other => panic!("Unknown SymbolKind in index: {}", other),
-            }),
+            symbol_kind: match helper.symbol_kind {
+                Some(s) => Some(parse_symbol_kind(&s).map_err(serde::de::Error::custom)?),
+                None => None,
+            },
             text: helper.text,
             score: helper.score,
         })

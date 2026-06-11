@@ -13,10 +13,9 @@ We take the security of RustRag seriously. If you believe you've found a securit
 
 ### How to Report
 
-**DO NOT** open a public GitHub issue for security vulnerabilities. Instead, choose one of these options:
+**DO NOT** open a public GitHub issue for security vulnerabilities. Instead, use one of these options:
 
-1. **Email**: Send details to `odolenchik@gmail.com`
-2. **GitHub Security Advisories**: Use [Private Vulnerability Reporting](https://docs.github.com/en/code-security/security-advisories/guidance-on-reporting-and-writing/privately-reporting-a-vulnerability) via the "Security" tab
+1. **GitHub Security Advisories (Recommended)**: Use [Private Vulnerability Reporting](https://docs.github.com/en/code-security/security-advisories/guidance-on-reporting-and-writing/privately-reporting-a-vulnerability) via the repository's "Security" tab
 
 ### What to Include
 
@@ -54,7 +53,7 @@ RustRag includes several built-in security features:
 ## Security Best Practices for Users
 
 1. Only set `LLAMA_ENDPOINT` to trusted LLM servers
-2. Run the HTTP API server on `127.0.0.1` only — it has no built-in authentication in current versions
+2. Run the HTTP API server on `127.0.0.1` only — secure it with a Bearer token via the `API_TOKEN` env var (see docs for configuration)
 3. Do not share `.rustrag/index.jsonl` or `.rustrag/embed_cache.jsonl` if your code contains sensitive information, as indexed source code is stored in plaintext
 
 ## Security-Related Dependencies
@@ -69,4 +68,4 @@ We run `cargo audit --deny warnings` as part of our CI pipeline to check for kno
 
 ## Contact
 
-For any security-related questions, contact: `odolenchik@gmail.com`
+For any security-related questions, open a [Security Advisory](https://github.com/odolenchik/RustRAG/security/advisories/new) via the GitHub "Security" tab.

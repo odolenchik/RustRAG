@@ -67,6 +67,8 @@ pub struct McpState {
     initialized: std::sync::atomic::AtomicBool,
 }
 
+
+
 impl McpState {
     fn new(workspace_root: &std::path::Path) -> Self {
         let store_path = workspace_root.join(".rustrag");
@@ -129,12 +131,12 @@ fn handle_tools_list(state: &McpState) -> Result<Value> {
     }))
 }
 
-async fn handle_tools_call(params: Value, state: &McpState) -> Result<Value> {
+async fn handle_tools_call(params: Value, store_path: &std::path::Path) -> Result<Value> {
     let call_params: ToolCallParams = serde_json::from_value(params)?;
 
     match call_params.name.as_str() {
-        "rag_search" => rag_search_tool(&call_params.arguments, state),
-        "rag_query" => rag_query_tool(&call_params.arguments, state).await,
+        "rag_search" => rag_search_tool(&call_params.arguments, store_path),
+        "rag_query" => rag_query_tool(&call_params.arguments, store_path).await,
         _ => anyhow::bail!("Unknown tool: {}", call_params.name),
     }
 }
@@ -236,7 +238,7 @@ fn type_name(v: &Value) -> &'static str {
 
 // ---- Tool implementations --------------------------------------------------
 
-fn rag_search_tool(args: &Value, state: &McpState) -> Result<Value> {
+fn rag_search_tool(args: &Value, store_path: &std::path::Path) -> Result<Value> {
     let schema = serde_json::json!({
         "type": "object",
         "properties": {
@@ -265,7 +267,7 @@ fn rag_search_tool(args: &Value, state: &McpState) -> Result<Value> {
     }
 
     let embedding = rust_rag_core::embedding::embed(&query)?;
-    let store = rust_rag_core::vector_store::VectorStore::open(&state.store_path)?;
+    let store = rust_rag_core::vector_store::VectorStore::open(store_path)?;
     let results = store.hybrid_search(&embedding, &query, top_k, 0.7, None)?;
 
     Ok(serde_json::json!({
@@ -273,7 +275,7 @@ fn rag_search_tool(args: &Value, state: &McpState) -> Result<Value> {
     }))
 }
 
-async fn rag_query_tool(args: &Value, state: &McpState) -> Result<Value> {
+async fn rag_query_tool(args: &Value, store_path: &std::path::Path) -> Result<Value> {
     let schema = serde_json::json!({
         "type": "object",
         "properties": {
@@ -299,7 +301,7 @@ async fn rag_query_tool(args: &Value, state: &McpState) -> Result<Value> {
     let top_k = config.llm_config().top_k;
 
     let embedding = rust_rag_core::embedding::embed(&question)?;
-    let store = rust_rag_core::vector_store::VectorStore::open(&state.store_path)?;
+    let store = rust_rag_core::vector_store::VectorStore::open(store_path)?;
     let results = store.hybrid_search(&embedding, &question, top_k, 0.7, None)?;
 
     let context: String = results
@@ -408,27 +410,35 @@ async fn dispatch_request(
     state: &std::sync::Arc<std::sync::Mutex<McpState>>,
 ) -> Option<JsonRpcResponse> {
     let method = req.method;
-    let params = req.params;
+    let params = req.params.clone();
     let id = req.id.clone();
 
-    // Lock once and handle everything in one shot.
-    let guard = state.lock().unwrap();
+    // Handle "tools/call" outside the lock since rag_query_tool spawns async work.
+    if method == "tools/call" {
+        // Clone the path out of the guard so we can release the lock before awaiting.
+        let store_path = state.lock().unwrap().store_path.clone();
+        let result = handle_tools_call(params, &store_path).await;
+        return match result {
+            Ok(v) => Some(ok_response(id, v)),
+            Err(e) => Some(err_response(id, -32603, &format!("Internal error: {}", e))),
+        };
+    }
 
-    let result: Result<Value, anyhow::Error> = match method.as_str() {
+    // All other methods are synchronous — hold the lock for the entire handling.
+    let guard = state.lock().unwrap();
+    let result: Result<Value> = match method.as_str() {
         "initialize" => {
-            let _params: InitializeParams = serde_json::from_value(params).ok()?;
             if !guard.store_path.join("index.jsonl").exists() {
-                return Some(err_response(
-                    id,
-                    -32603,
-                    "No index found. Run `rust-rag index <path>` first.",
-                ));
+                Err(anyhow::anyhow!(
+                    "No index found. Run `rust-rag index <path>` first."
+                ))
+            } else {
+                Ok(serde_json::json!({
+                    "protocolVersion": MCP_VERSION,
+                    "capabilities": { "tools": {} },
+                    "serverInfo": { "name": "rust-rag-mcp", "version": "0.1.0" }
+                }))
             }
-            Ok(serde_json::json!({
-                "protocolVersion": MCP_VERSION,
-                "capabilities": { "tools": {} },
-                "serverInfo": { "name": "rust-rag-mcp", "version": "0.1.0" }
-            }))
         }
         "notifications/initialized" => {
             // Set initialized flag atomically — no need to hold the Mutex for a boolean.
@@ -438,7 +448,6 @@ async fn dispatch_request(
             Ok(serde_json::json!({}))
         }
         "tools/list" => handle_tools_list(&guard),
-        "tools/call" => handle_tools_call(params, &guard).await,
         _ => Err(anyhow::anyhow!("Method not found: {}", method)),
     };
 

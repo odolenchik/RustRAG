@@ -106,6 +106,9 @@ impl AppState {
     }
 }
 
+/// Maximum allowed length for search queries and questions to prevent resource exhaustion.
+const MAX_QUERY_LENGTH: usize = 4096;
+
 /// Request parameters for `/search`.
 #[derive(Debug, Deserialize)]
 struct SearchQuery {
@@ -116,6 +119,17 @@ struct SearchQuery {
 
 fn default_top_k() -> usize {
     5
+}
+
+/// Validate that a string parameter does not exceed the maximum allowed length.
+fn validate_query_length(value: &str, field_name: &str) -> Result<(), (StatusCode, String)> {
+    if value.len() > MAX_QUERY_LENGTH {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("Field '{}' exceeds maximum length of {} characters (got {})", field_name, MAX_QUERY_LENGTH, value.len()),
+        ));
+    }
+    Ok(())
 }
 
 /// Extract the Bearer token from the Authorization header, if present.
@@ -202,6 +216,11 @@ async fn search_handler(
         return (StatusCode::TOO_MANY_REQUESTS, serde_json::to_string(&serde_json::json!({"error": "Rate limit exceeded"})).unwrap());
     }
 
+    // Validate query length to prevent resource exhaustion / prompt injection
+    if let Err((_status, msg)) = validate_query_length(&params.query, "query") {
+        return (StatusCode::BAD_REQUEST, serde_json::to_string(&serde_json::json!({"error": msg})).unwrap());
+    }
+
     let query_embedding = match rust_rag_core::embedding::embed(&params.query) {
         Ok(v) => v,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, serde_json::to_string(&serde_json::json!({"error": format!("Embed failed: {}", e)})).unwrap()),
@@ -228,6 +247,11 @@ async fn query_handler(
 
     if state.rate_limiter.clone().try_acquire_owned().is_err() {
         return (StatusCode::TOO_MANY_REQUESTS, serde_json::to_string(&serde_json::json!({"error": "Rate limit exceeded"})).unwrap());
+    }
+
+    // Validate question length to prevent resource exhaustion / prompt injection
+    if let Err((_, msg)) = validate_query_length(&body.question, "question") {
+        return (StatusCode::BAD_REQUEST, serde_json::to_string(&serde_json::json!({"error": msg})).unwrap());
     }
 
     let config = config::Config::find().unwrap_or_default();
@@ -316,6 +340,14 @@ async fn query_stream_handler(
         return axum::response::Response::builder()
             .status(axum::http::StatusCode::TOO_MANY_REQUESTS)
             .body(Body::empty())
+            .unwrap();
+    }
+
+    // Validate question length to prevent resource exhaustion / prompt injection
+    if let Err((_, msg)) = validate_query_length(&params.question, "question") {
+        return axum::response::Response::builder()
+            .status(axum::http::StatusCode::BAD_REQUEST)
+            .body(Body::from(serde_json::to_string(&serde_json::json!({"error": msg})).unwrap_or_default()))
             .unwrap();
     }
 

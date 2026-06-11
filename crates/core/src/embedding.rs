@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 use std::fmt::Write as FmtWrite;
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
+use std::sync::OnceLock;
 
 use fastembed::{
     read_file_to_bytes, InitOptionsUserDefined, Pooling, TextEmbedding, TokenizerFiles,
@@ -144,12 +144,20 @@ fn init_embedder() -> Result<TextEmbedding> {
 }
 
 /// Lazy-initialized singleton embedder — loads ONNX model once on first use.
-static EMBEDDER: LazyLock<TextEmbedding> =
-    LazyLock::new(|| init_embedder().expect("Embedding model initialization failed"));
+static EMBEDDER: OnceLock<Result<TextEmbedding, anyhow::Error>> = OnceLock::new();
+
+/// Get the lazy-initialized embedder, initializing it on first call.
+/// Returns an error if the ONNX model failed to load instead of panicking.
+fn get_embedder() -> Result<&'static TextEmbedding> {
+    EMBEDDER
+        .get_or_init(|| init_embedder())
+        .as_ref()
+        .map_err(|e| anyhow::anyhow!("Embedding model initialization failed: {e}"))
+}
 
 /// Embed a single text chunk into a vector using the local embedding model.
 pub fn embed(text: &str) -> Result<Vec<f32>> {
-    let result = EMBEDDER
+    let result = get_embedder()?
         .embed(vec![text.to_string()], None /* batch_size */)
         .context("Failed to compute embedding")?;
 
@@ -160,7 +168,7 @@ pub fn embed(text: &str) -> Result<Vec<f32>> {
 /// Embed multiple texts in a single ONNX inference call. Returns one vector per input text.
 pub fn embed_batch(texts: &[&str]) -> Result<Vec<Vec<f32>>> {
     let strings: Vec<String> = texts.iter().map(|t| t.to_string()).collect();
-    let results = EMBEDDER
+    let results = get_embedder()?
         .embed(strings, None)
         .context("Failed to compute batch embedding")?;
 

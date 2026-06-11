@@ -20,7 +20,7 @@ enum Command {
     Clean(CleanArgs),
     /// Ask a question about an indexed workspace
     Ask(AskArgs),
-    /// Start interactive chat session (WIP)
+    /// Start interactive chat session with LLM assistance
     Chat(ChatArgs),
     /// Download the embedding model (bge-small-en-v1.5) from HuggingFace
     Download(DownloadArgs),
