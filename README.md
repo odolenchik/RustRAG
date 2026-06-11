@@ -158,10 +158,12 @@ curl -H 'Accept: text/event-stream' "http://localhost:8090/query/stream?question
 
 Implements **MCP stdio transport** (protocol version `2024-11-05`) with two tools:
 
-| Tool | Description |
-|------|-------------|
-| `rag_search` | Returns raw search results with BM25+vector scores and metadata |
-| `rag_query` | Full RAG pipeline — retrieves relevant chunks, builds context, returns LLM answer with citations |
+| Tool | Description | Arguments |
+|------|-------------|-----------|
+| `rag_search` | Search for code chunks by semantic similarity. Returns raw snippets with BM25+vector scores, file paths, line numbers, and metadata | `query` (string, max 4096 chars) — search query; `top_k` (integer, 1–100, default 5) — number of results to return |
+| `rag_query` | Full RAG pipeline: retrieves relevant chunks via hybrid search, builds context, and queries the LLM for an answer with source citations | `question` (string, max 4096 chars) — question about the indexed codebase |
+
+The MCP server exposes itself over stdio: send JSON-RPC 2.0 requests on stdin and read responses from stdout. Supports `initialize`, `notifications/initialized`, `tools/list`, and `tools/call` methods.
 
 ## Model Auto-Download
 
