@@ -2,6 +2,47 @@ use crate::error::RagCoreError;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+/// Walk a Cargo workspace directory and extract all code chunks.
+#[tracing::instrument(level = "info", skip(root), fields(workspace = %root.display()))]
+pub fn index_workspace(root: &Path) -> Result<Vec<Chunk>, RagCoreError> {
+    let mut chunks = Vec::new();
+
+    let manifest = root.join("Cargo.toml");
+    if !manifest.exists() {
+        return Err(RagCoreError::MissingCargoToml(root.to_path_buf()));
+    }
+
+    let cargo_content = std::fs::read_to_string(&manifest).map_err(|e| {
+        RagCoreError::FileRead(
+            manifest.clone(),
+            Box::new(std::io::Error::other(format!("reading Cargo.toml: {}", e))),
+        )
+    })?;
+    let cargo_toml: toml::Value = cargo_content.parse().map_err(|e| {
+        RagCoreError::FileRead(
+            manifest.clone(),
+            Box::new(std::io::Error::other(format!("parsing Cargo.toml: {}", e))),
+        )
+    })?;
+
+    let member_paths = extract_workspace_members(&cargo_toml, root);
+
+    for member_path in member_paths {
+        let src_dir = member_path.join("src");
+        if !src_dir.exists() {
+            continue;
+        }
+        collect_rs_files(&src_dir, &mut chunks)?;
+    }
+
+    // Apply overlap after all AST extraction is done
+    apply_overlap(&mut chunks);
+
+    tracing::info!(chunks = chunks.len(), "indexing complete");
+
+    Ok(chunks)
+}
+
 /// A unit of code to be embedded — typically a function, impl block, or unsafe region.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Chunk {
@@ -71,6 +112,7 @@ impl SymbolKind {
 /// - Each file is read only once (not N times).
 /// - Byte→line mapping uses a precomputed prefix array of cumulative line lengths — O(1) lookup.
 #[allow(dead_code)] // called internally by index_workspace; pub(crate) for test access
+#[tracing::instrument(level = "debug", skip(chunks), fields(chunk_count = chunks.len()))]
 pub fn apply_overlap(chunks: &mut [Chunk]) {
     let overlap = crate::config::Config::find()
         .ok()
@@ -221,43 +263,7 @@ pub fn apply_overlap(chunks: &mut [Chunk]) {
     }
 }
 
-/// Walk a Cargo workspace directory and extract all code chunks.
-pub fn index_workspace(root: &Path) -> Result<Vec<Chunk>, RagCoreError> {
-    let mut chunks = Vec::new();
 
-    let manifest = root.join("Cargo.toml");
-    if !manifest.exists() {
-        return Err(RagCoreError::MissingCargoToml(root.to_path_buf()));
-    }
-
-    let cargo_content = std::fs::read_to_string(&manifest).map_err(|e| {
-        RagCoreError::FileRead(
-            manifest.clone(),
-            Box::new(std::io::Error::other(format!("reading Cargo.toml: {}", e))),
-        )
-    })?;
-    let cargo_toml: toml::Value = cargo_content.parse().map_err(|e| {
-        RagCoreError::FileRead(
-            manifest.clone(),
-            Box::new(std::io::Error::other(format!("parsing Cargo.toml: {}", e))),
-        )
-    })?;
-
-    let member_paths = extract_workspace_members(&cargo_toml, root);
-
-    for member_path in member_paths {
-        let src_dir = member_path.join("src");
-        if !src_dir.exists() {
-            continue;
-        }
-        collect_rs_files(&src_dir, &mut chunks)?;
-    }
-
-    // Apply overlap after all AST extraction is done
-    apply_overlap(&mut chunks);
-
-    Ok(chunks)
-}
 
 pub fn extract_workspace_members(cargo: &toml::Value, root: &Path) -> Vec<PathBuf> {
     let mut raw_paths = Vec::new();
@@ -300,6 +306,7 @@ pub fn extract_workspace_members(cargo: &toml::Value, root: &Path) -> Vec<PathBu
     paths
 }
 
+#[tracing::instrument(level = "debug", skip(chunks), fields(dir = %dir.display()))]
 fn collect_rs_files(dir: &Path, chunks: &mut Vec<Chunk>) -> Result<(), RagCoreError> {
     for entry in walkdir::WalkDir::new(dir)
         .min_depth(1)
@@ -325,6 +332,7 @@ fn collect_rs_files(dir: &Path, chunks: &mut Vec<Chunk>) -> Result<(), RagCoreEr
     Ok(())
 }
 
+#[tracing::instrument(level = "debug", skip(chunks), fields(file = %file_path.display(), content_len = content.len()))]
 pub fn parse_and_extract(content: &str, file_path: &Path, chunks: &mut Vec<Chunk>) -> Result<(), RagCoreError> {
     let mut parser = tree_sitter::Parser::new();
     if let Err(e) = parser.set_language(&tree_sitter_rust::LANGUAGE.into()) {

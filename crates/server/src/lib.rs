@@ -195,6 +195,7 @@ async fn handler_not_found() -> (StatusCode, &'static str) {
 }
 
 /// GET /status — returns index metadata (no sensitive paths exposed).
+#[tracing::instrument(level = "info", skip_all, fields(path = "/status"))]
 async fn status_handler(state: axum::extract::State<AppState>) -> JsonResponse<serde_json::Value> {
     let content =
         std::fs::read_to_string(state.0.store.path.join("index.jsonl")).unwrap_or_default();
@@ -207,6 +208,7 @@ async fn status_handler(state: axum::extract::State<AppState>) -> JsonResponse<s
 }
 
 /// POST /search — semantic search over indexed chunks (no LLM).
+#[tracing::instrument(level = "info", skip_all, fields(query = params.query.as_str()))]
 async fn search_handler(
     state: axum::extract::State<AppState>,
     headers: axum::http::HeaderMap,
@@ -268,6 +270,7 @@ async fn search_handler(
 }
 
 /// POST /query — full RAG: search + LLM answer with citations.
+#[tracing::instrument(level = "info", skip_all, fields(question))]
 async fn query_handler(
     state: axum::extract::State<AppState>,
     headers: axum::http::HeaderMap,
@@ -396,6 +399,7 @@ struct QueryStreamQuery {
     top_k: usize,
 }
 
+#[tracing::instrument(level = "info", skip_all, fields(question))]
 async fn query_stream_handler(
     state: axum::extract::State<AppState>,
     headers: axum::http::HeaderMap,

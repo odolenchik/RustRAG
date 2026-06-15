@@ -8,6 +8,11 @@ struct Cli {
     command: Command,
 }
 
+/// Initialise tracing once at application startup.
+fn init_tracing() {
+    rust_rag_core::tracing::init();
+}
+
 #[derive(Subcommand)]
 enum Command {
     /// Index a Cargo workspace
@@ -134,6 +139,8 @@ fn resolve_workspace_path(path_arg: Option<&str>) -> Result<Option<std::path::Pa
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    init_tracing();
+
     let cli = Cli::parse();
 
     match cli.command {

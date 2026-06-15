@@ -6,6 +6,7 @@ use crate::vector_store::{SearchResult, VectorStore};
 
 /// Retrieve relevant chunks for a given query from an existing vector store.
 /// Uses hybrid search (BM25 + cosine similarity) by default.
+#[tracing::instrument(level = "info", skip(vector_store), fields(query, top_k))]
 pub fn retrieve(
     query: &str,
     embedding: &[f32],
@@ -18,6 +19,7 @@ pub fn retrieve(
 }
 
 /// Retrieve relevant chunks from in-memory chunks (no persistent store).
+#[tracing::instrument(level = "info", skip(chunks), fields(query, top_k))]
 pub fn retrieve_from_chunks(
     chunks: &[Chunk],
     query: &str,
@@ -70,6 +72,7 @@ pub fn retrieve_from_chunks(
 }
 
 /// Hybrid retrieval combining vector similarity with call graph proximity.
+#[tracing::instrument(level = "info", skip(chunks, _graph, _name_to_index), fields(query, top_k))]
 pub fn retrieve_hybrid(
     query: &str,
     chunks: &[Chunk],

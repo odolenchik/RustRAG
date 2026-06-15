@@ -34,6 +34,7 @@ impl SseChunk {
     }
 }
 
+#[tracing::instrument(level = "debug", skip(client, system_prompt, user_message), fields(model = client.model))]
 fn stream_chunks<'a>(
     client: &'a LlmClient,
     system_prompt: &'a str,
@@ -249,6 +250,7 @@ impl LlmClient {
 
 #[async_trait::async_trait]
 impl ChatBackend for LlmClient {
+    #[tracing::instrument(level = "info", skip(self, system_prompt, user_message), fields(model = self.model))]
     async fn complete(&self, system_prompt: &str, user_message: &str) -> Result<String> {
         // base_url already contains the full endpoint path (e.g. http://localhost:8080/chat/completions)
         let url = self.base_url.as_str();

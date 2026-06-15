@@ -8,6 +8,7 @@ use std::path::Path;
 
 /// Run the retrieval pipeline: embed query → hybrid search → build context string.
 /// Also prints result headers to stdout (for `ask` and `ask_stream`).
+#[tracing::instrument(level = "info", skip_all, fields(query))]
 pub fn run_retrieval_pipeline(
     query: &str,
     workspace_root: Option<&str>,
@@ -68,6 +69,7 @@ pub enum OutputMode {
 }
 
 /// Unified ask implementation — retrieves chunks, builds context, calls LLM with specified output format.
+#[tracing::instrument(level = "info", skip_all, fields(query))]
 fn run_ask_impl(
     query: &str,
     workspace_root: Option<&str>,
@@ -119,6 +121,7 @@ fn run_ask_impl(
 }
 
 /// Stream ask implementation — retrieves chunks and streams LLM response.
+#[tracing::instrument(level = "info", skip_all, fields(query))]
 async fn run_ask_stream_impl(query: &str, workspace_root: Option<&str>) -> Result<()> {
     let (results, context) = run_retrieval_pipeline(query, workspace_root)?;
 
@@ -194,6 +197,7 @@ async fn run_ask_stream_json_impl(query: &str, workspace_root: Option<&str>) -> 
 }
 
 /// Run the index pipeline on a workspace directory with incremental updates.
+#[tracing::instrument(level = "info", skip(path), fields(workspace = path))]
 pub fn index_workspace(path: &str) -> Result<()> {
     let workspace_root = std::path::PathBuf::from(path);
     if !workspace_root.exists() {

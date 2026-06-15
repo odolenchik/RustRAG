@@ -7,6 +7,7 @@ pub mod eval;
 pub mod indexer;
 pub mod retrieval;
 pub mod state;
+pub mod tracing;
 pub mod vector_store;
 
 pub use error::{ErrorKind, RagCoreError};

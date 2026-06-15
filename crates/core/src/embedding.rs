@@ -9,6 +9,42 @@ use fastembed::{
     UserDefinedEmbeddingModel,
 };
 
+/// Initialise the embedding model. If not found in any location, attempts auto-download from HuggingFace.
+#[tracing::instrument(level = "info", skip())]
+fn init_embedder() -> Result<TextEmbedding, RagCoreError> {
+    let dir = model_dir();
+
+    if let Ok(em) = try_init_embedder(&dir) {
+        return Ok(em);
+    }
+
+    // Model not found — attempt auto-download to HF cache
+    let home = std::env::var("HOME").ok();
+    let hf_target = match home.as_ref() {
+        Some(h) => PathBuf::from(h).join(".cache/huggingface/hub"),
+        None => return Err(RagCoreError::Embedding(
+            "Cannot determine HOME to download model. Please download manually:\n  rust-rag download ~/.cache/huggingface/hub/\nOr set RUSRAG_MODEL_PATH.".to_string(),
+            Box::new(std::io::Error::other("HOME not set")),
+        )),
+    };
+
+    println!("Model not found, downloading from HuggingFace...");
+    if let Err(e) = download_model(&hf_target) {
+        return Err(RagCoreError::Embedding(
+            format!("Failed to auto-download model: {}\n\nPlease try manually:\n  rust-rag download ~/.cache/huggingface/hub/", e),
+            Box::new(std::io::Error::other(e)),
+        ));
+    }
+
+    println!("Model downloaded. Trying again...");
+    try_init_embedder(&hf_target).map_err(|e| {
+        RagCoreError::Embedding(
+            "Failed to load embedding model after download".to_string(),
+            Box::new(std::io::Error::other(format!("{:?}", e))),
+        )
+    })
+}
+
 /// Standard HuggingFace cache directory for downloaded models.
 fn hf_cache_model_dir() -> Option<PathBuf> {
     // HF stores downloaded models under ~/.cache/huggingface/hub/
@@ -130,41 +166,6 @@ fn try_init_embedder(model_dir: &Path) -> Result<TextEmbedding, RagCoreError> {
     })
 }
 
-/// Initialize the embedding model. If not found in any location, attempts auto-download from HuggingFace.
-fn init_embedder() -> Result<TextEmbedding, RagCoreError> {
-    let dir = model_dir();
-
-    if let Ok(em) = try_init_embedder(&dir) {
-        return Ok(em);
-    }
-
-    // Model not found — attempt auto-download to HF cache
-    let home = std::env::var("HOME").ok();
-    let hf_target = match home.as_ref() {
-        Some(h) => PathBuf::from(h).join(".cache/huggingface/hub"),
-        None => return Err(RagCoreError::Embedding(
-            "Cannot determine HOME to download model. Please download manually:\n  rust-rag download ~/.cache/huggingface/hub/\nOr set RUSRAG_MODEL_PATH.".to_string(),
-            Box::new(std::io::Error::other("HOME not set")),
-        )),
-    };
-
-    println!("Model not found, downloading from HuggingFace...");
-    if let Err(e) = download_model(&hf_target) {
-        return Err(RagCoreError::Embedding(
-            format!("Failed to auto-download model: {}\n\nPlease try manually:\n  rust-rag download ~/.cache/huggingface/hub/", e),
-            Box::new(std::io::Error::other(e)),
-        ));
-    }
-
-    println!("Model downloaded. Trying again...");
-    try_init_embedder(&hf_target).map_err(|e| {
-        RagCoreError::Embedding(
-            "Failed to load embedding model after download".to_string(),
-            Box::new(std::io::Error::other(format!("{:?}", e))),
-        )
-    })
-}
-
 /// Lazy-initialized singleton embedder — loads ONNX model once on first use.
 static EMBEDDER: OnceLock<Result<TextEmbedding, RagCoreError>> = OnceLock::new();
 
@@ -180,6 +181,7 @@ fn get_embedder() -> Result<&'static TextEmbedding, RagCoreError> {
 }
 
 /// Embed a single text chunk into a vector using the local embedding model.
+#[tracing::instrument(level = "debug", skip_all, fields(text_len = text.len()))]
 pub fn embed(text: &str) -> Result<Vec<f32>, RagCoreError> {
     let result = get_embedder()?
         .embed(vec![text.to_string()], None /* batch_size */)
@@ -195,6 +197,7 @@ pub fn embed(text: &str) -> Result<Vec<f32>, RagCoreError> {
 }
 
 /// Embed multiple texts in a single ONNX inference call. Returns one vector per input text.
+#[tracing::instrument(level = "debug", skip_all, fields(text_count = texts.len()))]
 pub fn embed_batch(texts: &[&str]) -> Result<Vec<Vec<f32>>, RagCoreError> {
     let strings: Vec<String> = texts.iter().map(|t| t.to_string()).collect();
     let results = get_embedder()?

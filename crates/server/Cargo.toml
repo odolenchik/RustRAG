@@ -10,6 +10,7 @@ path = "src/bin.rs"
 
 [dependencies]
 anyhow.workspace = true
+tracing.workspace = true
 clap = { version = "4", features = ["derive"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

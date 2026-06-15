@@ -6,6 +6,7 @@ rust-version.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+tracing.workspace = true
 log.workspace = true
 thiserror.workspace = true
 serde = { workspace = true, features = ["derive"] }
