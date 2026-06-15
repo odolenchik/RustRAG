@@ -10,20 +10,84 @@ use axum::{
     Json, Router,
 };
 use futures_util::StreamExt;
-use rust_rag_core::{config, vector_store::VectorStore};
+use rust_rag_core::vector_store::VectorStore;
 use rust_rag_llm::ChatBackend;
 
 use serde::Deserialize;
-use std::{path::Path, sync::Arc};
-use tokio::sync::Semaphore;
+use std::{collections::VecDeque, path::Path, sync::Arc, time::Instant};
 use tower_http::cors::{AllowOrigin, CorsLayer};
+
+/// Sliding-window rate limiter — tracks request timestamps per client IP.
+pub struct RateLimiter {
+    /// Per-client deque of request timestamps.
+    clients: std::sync::Mutex<std::collections::HashMap<String, VecDeque<Instant>>>,
+    max_per_window: usize,
+    window_secs: u64,
+}
+
+impl RateLimiter {
+    /// Create a new rate limiter with the given requests-per-minute budget.
+    pub fn new(per_minute: u32) -> Self {
+        Self {
+            clients: std::sync::Mutex::new(std::collections::HashMap::new()),
+            max_per_window: per_minute as usize,
+            window_secs: 60,
+        }
+    }
+
+    /// Check whether the given client is allowed. Prunes stale entries first.
+    pub fn check(&self, key: &str) -> bool {
+        let now = Instant::now();
+        let window = std::time::Duration::from_secs(self.window_secs);
+        let mut map = self.clients.lock().unwrap();
+
+        // Clean up expired entries for this client.
+        if let Some(queue) = map.get_mut(key) {
+            while let Some(&front) = queue.front() {
+                if now.duration_since(front) >= window {
+                    queue.pop_front();
+                } else {
+                    break;
+                }
+            }
+            // Check against the budget.
+            if queue.len() < self.max_per_window {
+                queue.push_back(now);
+                true
+            } else {
+                false
+            }
+        } else {
+            map.insert(key.to_string(), [now].into());
+            true
+        }
+    }
+
+    /// Get the client key from headers (X-Forwarded-For / X-Real-IP) or a placeholder.
+    pub fn resolve_key(headers: &axum::http::HeaderMap, fallback: &str) -> String {
+        // Prefer explicit proxy headers for correctness behind load balancers.
+        if let Some(forwarded) = headers.get("X-Forwarded-For").and_then(|h| h.to_str().ok()) {
+            return forwarded.split(',').next().unwrap_or(fallback).trim().to_string();
+        }
+        if let Some(real_ip) = headers.get("X-Real-Ip").and_then(|h| h.to_str().ok()) {
+            return real_ip.trim().to_string();
+        }
+        fallback.to_string()
+    }
+}
+
+/// Maximum allowed length for search queries and questions to prevent resource exhaustion.
+const MAX_QUERY_LENGTH_CHARS: usize = 4096;
+
+/// Default maximum size (in bytes) of the assembled context sent to the LLM.
+const DEFAULT_MAX_CONTEXT_SIZE: usize = 12_000;
 
 /// Request state shared across handlers.
 pub struct AppState {
     pub store: std::sync::Arc<VectorStore>,
-    /// Rate limiter: permits per minute for non-stream endpoints.
-    pub rate_limiter: Arc<Semaphore>,
-    /// Shared HTTP client for LLM requests — enables connection pooling.
+    /// Sliding-window rate limiter (per-client). Cloned via Arc for shared access.
+    pub rate_limiter: Arc<RateLimiter>,
+    /// Shared HTTP client for LLM requests — enables connection pooling, with timeouts.
     pub http_client: std::sync::Arc<reqwest::Client>,
     /// Resolved LLM endpoint (from config / env / default).
     pub llm_endpoint: String,
@@ -31,6 +95,8 @@ pub struct AppState {
     pub llm_model: String,
     /// Optional API key for Bearer token authentication. Empty string means no auth required.
     pub api_key: Option<String>,
+    /// Maximum context size in bytes sent to the LLM.
+    pub max_context_size: usize,
 }
 
 impl Clone for AppState {
@@ -42,6 +108,7 @@ impl Clone for AppState {
             llm_endpoint: self.llm_endpoint.clone(),
             llm_model: self.llm_model.clone(),
             api_key: self.api_key.clone(),
+            max_context_size: self.max_context_size,
         }
     }
 }
@@ -72,6 +139,35 @@ impl AppState {
             .filter(|key| !key.is_empty())
     }
 
+    /// Build a shared `reqwest::Client` with connection pooling and production-ready timeouts.
+    fn build_http_client() -> Arc<reqwest::Client> {
+        Arc::new(
+            reqwest::Client::builder()
+                .pool_max_idle_per_host(10)
+                // Timeout for the entire HTTP request (connect + TLS + send + receive).
+                // This prevents a single LLM call from hanging forever.
+                .timeout(std::time::Duration::from_secs(300))
+                // Per-connection read timeout — no chunk should take longer than 60s to arrive.
+                .read_timeout(std::time::Duration::from_secs(60))
+                .build()
+                .expect("Failed to create HTTP client"),
+        )
+    }
+
+    /// Resolve max context size from env override, config file, or default.
+    fn resolve_max_context_size() -> usize {
+        std::env::var("RUSRAG_MAX_CONTEXT_SIZE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .or_else(|| {
+                rust_rag_core::config::Config::find()
+                    .ok()
+                    .as_ref()
+                    .map(|c| c.llm_config().max_context_size.unwrap_or(DEFAULT_MAX_CONTEXT_SIZE))
+            })
+            .unwrap_or(DEFAULT_MAX_CONTEXT_SIZE)
+    }
+
     /// Create app state from a workspace root that has an index.
     pub fn from_workspace(workspace_root: &Path, rate_limit_per_min: u32) -> Result<Self> {
         let store_path = workspace_root.join(".rustrag");
@@ -84,11 +180,12 @@ impl AppState {
         let store = VectorStore::open(&store_path)?;
         Ok(Self {
             store: std::sync::Arc::new(store),
-            rate_limiter: Arc::new(Semaphore::new(rate_limit_per_min as usize)),
-            http_client: rust_rag_llm::ollama_client::LlmClient::shared_http_client(),
+            rate_limiter: Arc::new(RateLimiter::new(rate_limit_per_min)),
+            http_client: Self::build_http_client(),
             llm_endpoint: Self::resolve_endpoint(),
             llm_model: Self::resolve_model(),
             api_key: Self::resolve_api_key(),
+            max_context_size: Self::resolve_max_context_size(),
         })
     }
 
@@ -97,39 +194,70 @@ impl AppState {
         let store = VectorStore::open(path)?;
         Ok(Self {
             store: std::sync::Arc::new(store),
-            rate_limiter: Arc::new(Semaphore::new(rate_limit_per_min as usize)),
-            http_client: rust_rag_llm::ollama_client::LlmClient::shared_http_client(),
+            rate_limiter: Arc::new(RateLimiter::new(rate_limit_per_min)),
+            http_client: Self::build_http_client(),
             llm_endpoint: Self::resolve_endpoint(),
             llm_model: Self::resolve_model(),
             api_key: Self::resolve_api_key(),
+            max_context_size: Self::resolve_max_context_size(),
         })
     }
-}
 
-/// Maximum allowed length for search queries and questions to prevent resource exhaustion.
-const MAX_QUERY_LENGTH: usize = 4096;
+    /// Truncate context string so it fits within `max_context_size` bytes,
+    /// preserving complete chunk blocks (each starts with `[file_path:line]`).
+    pub fn trim_context(&self, context: String) -> String {
+        if context.len() <= self.max_context_size {
+            return context;
+        }
 
-/// Request parameters for `/search`.
-#[derive(Debug, Deserialize)]
-struct SearchQuery {
-    query: String,
-    #[serde(default = "default_top_k")]
-    top_k: usize,
-}
+        let mut result = String::new();
+        let mut total = 0usize;
 
-fn default_top_k() -> usize {
-    5
+        // Each chunk block starts with `[file_path:line]`
+        let separator = "\n\n";
+        for part in context.split(separator) {
+            let block_len = if result.is_empty() {
+                part.len()
+            } else {
+                separator.len() + part.len()
+            };
+
+            // Don't add this chunk if it would overflow. The first chunk is
+            // always included (the `result.is_empty()` guard) so that even a
+            // tiny budget yields at least one complete chunk.
+            if !result.is_empty() && total + block_len > self.max_context_size {
+                break;
+            }
+
+            if !result.is_empty() {
+                result.push_str(separator);
+            }
+            result.push_str(part);
+            total += block_len;
+        }
+
+        // Truncate the last chunk to fit exactly, then add ellipsis
+        if result.len() > self.max_context_size {
+            let target = self.max_context_size - "…".len();
+            if let Some(trunc_pos) = result.char_indices().take(target).last() {
+                result.truncate(trunc_pos.0);
+            }
+            result.push('…');
+        }
+
+        result
+    }
 }
 
 /// Validate that a string parameter does not exceed the maximum allowed length.
 fn validate_query_length(value: &str, field_name: &str) -> Result<(), (StatusCode, String)> {
-    if value.len() > MAX_QUERY_LENGTH {
+    if value.len() > MAX_QUERY_LENGTH_CHARS {
         return Err((
             StatusCode::BAD_REQUEST,
             format!(
                 "Field '{}' exceeds maximum length of {} characters (got {})",
                 field_name,
-                MAX_QUERY_LENGTH,
+                MAX_QUERY_LENGTH_CHARS,
                 value.len()
             ),
         ));
@@ -189,6 +317,18 @@ pub fn build_router(state: AppState) -> Router {
         .fallback(handler_not_found)
 }
 
+/// Request parameters for `/search`.
+#[derive(Debug, Deserialize)]
+struct SearchQuery {
+    query: String,
+    #[serde(default = "default_top_k")]
+    top_k: usize,
+}
+
+fn default_top_k() -> usize {
+    5
+}
+
 /// Fallback handler for unmatched routes.
 async fn handler_not_found() -> (StatusCode, &'static str) {
     (StatusCode::NOT_FOUND, "Not Found")
@@ -222,7 +362,9 @@ async fn search_handler(
         );
     }
 
-    if state.rate_limiter.clone().try_acquire_owned().is_err() {
+    // Sliding-window rate limit check (per-client IP)
+    let client_key = RateLimiter::resolve_key(&headers, "127.0.0.1");
+    if !state.rate_limiter.check(&client_key) {
         return (
             StatusCode::TOO_MANY_REQUESTS,
             serde_json::to_string(&serde_json::json!({"error": "Rate limit exceeded"})).unwrap(),
@@ -261,11 +403,13 @@ async fn search_handler(
             StatusCode::OK,
             serde_json::to_string(&serde_json::json!({ "results": results })).unwrap(),
         ),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            serde_json::to_string(&serde_json::json!({"error": format!("Search failed: {}", e)}))
-                .unwrap(),
-        ),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                serde_json::to_string(&serde_json::json!({"error": format!("Search failed: {}", e)}))
+                    .unwrap(),
+            )
+        }
     }
 }
 
@@ -284,7 +428,9 @@ async fn query_handler(
         );
     }
 
-    if state.rate_limiter.clone().try_acquire_owned().is_err() {
+    // Sliding-window rate limit check (per-client IP)
+    let client_key = RateLimiter::resolve_key(&headers, "127.0.0.1");
+    if !state.rate_limiter.check(&client_key) {
         return (
             StatusCode::TOO_MANY_REQUESTS,
             serde_json::to_string(&serde_json::json!({"error": "Rate limit exceeded"})).unwrap(),
@@ -299,7 +445,7 @@ async fn query_handler(
         );
     }
 
-    let config = config::Config::find().unwrap_or_default();
+    let config = rust_rag_core::config::Config::find().unwrap_or_default();
     let top_k = config.llm_config().top_k;
 
     let query_embedding = match rust_rag_core::embedding::embed(&body.question) {
@@ -333,12 +479,14 @@ async fn query_handler(
         }
     };
 
-    // Build context from search results
-    let context: String = results_vec
+    // Build context from search results and trim to max_context_size
+    let raw_context: String = results_vec
         .iter()
         .map(|r| format!("[{}:{}]\n{}", r.file_path.display(), r.line_start, r.text))
         .collect::<Vec<_>>()
         .join("\n\n");
+
+    let context = state.0.trim_context(raw_context);
 
     let system_prompt = rust_rag_core::constants::DEFAULT_SYSTEM_PROMPT;
     let user_message = format!("Question: {}\n\nRelevant code:\n{}", body.question, context);
@@ -346,21 +494,24 @@ async fn query_handler(
     let endpoint = state.0.llm_endpoint.clone();
     let model = state.0.llm_model.clone();
     let http_client = std::sync::Arc::clone(&state.0.http_client);
-    let answer = tokio::task::spawn_blocking(move || {
-        rust_rag_llm::ollama_client::LlmClient::chat_with_http_client(
-            http_client,
-            &endpoint,
-            &model,
-            system_prompt,
-            &user_message,
-        )
-    })
+    let answer = tokio::time::timeout(
+        std::time::Duration::from_secs(120),
+        tokio::task::spawn_blocking(move || {
+            rust_rag_llm::ollama_client::LlmClient::chat_with_http_client(
+                http_client,
+                &endpoint,
+                &model,
+                system_prompt,
+                &user_message,
+            )
+        }),
+    )
     .await;
 
     let answer_text = match answer {
-        Ok(Ok(a)) => a,
-        Ok(Err(e)) => format!("LLM error: {}", e),
-        Err(_) => "LLM server busy".to_string(),
+        Ok(Ok(Ok(a))) => a,
+        Ok(Ok(Err(e))) => format!("LLM error: {}", e),
+        Ok(Err(_)) | Err(_) => "LLM server busy (request timed out)".to_string(),
     };
 
     let citations: Vec<_> = results_vec
@@ -413,7 +564,9 @@ async fn query_stream_handler(
             .unwrap();
     }
 
-    if state.0.rate_limiter.clone().try_acquire_owned().is_err() {
+    // Sliding-window rate limit check (per-client IP)
+    let client_key = RateLimiter::resolve_key(&headers, "127.0.0.1");
+    if !state.rate_limiter.check(&client_key) {
         return axum::response::Response::builder()
             .status(axum::http::StatusCode::TOO_MANY_REQUESTS)
             .body(Body::empty())
@@ -430,7 +583,7 @@ async fn query_stream_handler(
             .unwrap();
     }
 
-    let config = config::Config::find().unwrap_or_default();
+    let config = rust_rag_core::config::Config::find().unwrap_or_default();
     let top_k = config.llm_config().top_k;
 
     let query_embedding = match rust_rag_core::embedding::embed(&params.question) {
@@ -458,11 +611,14 @@ async fn query_stream_handler(
             }
         };
 
-    let context: String = results
+    // Build context and trim to max_context_size
+    let raw_context: String = results
         .iter()
         .map(|r| format!("[{}:{}]\n{}", r.file_path.display(), r.line_start, r.text))
         .collect::<Vec<_>>()
         .join("\n\n");
+
+    let context = state.0.trim_context(raw_context);
 
     let system_prompt = rust_rag_core::constants::DEFAULT_SYSTEM_PROMPT;
     let user_message = format!(
@@ -477,6 +633,7 @@ async fn query_stream_handler(
         let tx_clone = tx.clone();
         // Spawn the LLM streaming task directly as async — no nested runtime needed.
         // Use shared HTTP client from AppState for connection pooling.
+        // Wrap in tokio::time::timeout so a hung model still terminates after 5 minutes.
         let endpoint = state.0.llm_endpoint.clone();
         let model = state.0.llm_model.clone();
         let http_client = std::sync::Arc::clone(&state.0.http_client);
@@ -486,23 +643,38 @@ async fn query_stream_handler(
                 &model,
                 http_client,
             );
-            let mut stream = client.complete_stream_chunks(system_prompt, &user_message);
-            while let Some(chunk) = stream.next().await {
-                match chunk {
-                    Ok(text) => {
-                        let sse = format!("data: {}\n\n", text);
-                        let _ = tx_clone
-                            .send(Ok(bytes::Bytes::from(sse.into_bytes())))
-                            .await;
+            // Timeout the entire streaming call — prevents leaked SSE connections.
+            if tokio::time::timeout(
+                std::time::Duration::from_secs(300),
+                async {
+                    let mut stream = client.complete_stream_chunks(&system_prompt, &user_message);
+                    while let Some(chunk) = stream.next().await {
+                        match chunk {
+                            Ok(text) => {
+                                let sse = format!("data: {}\n\n", text);
+                                let _ = tx_clone
+                                    .send(Ok(bytes::Bytes::from(sse.into_bytes())))
+                                    .await;
+                            }
+                            Err(e) => {
+                                let err_sse = format!("event: error\ndata: {}\n\n", e);
+                                let _ = tx_clone
+                                    .send(Ok(bytes::Bytes::from(err_sse.into_bytes())))
+                                    .await;
+                                break;
+                            }
+                        }
                     }
-                    Err(e) => {
-                        let err_sse = format!("event: error\ndata: {}\n\n", e);
-                        let _ = tx_clone
-                            .send(Ok(bytes::Bytes::from(err_sse.into_bytes())))
-                            .await;
-                        break;
-                    }
-                }
+                },
+            )
+            .await
+            .is_err()
+            {
+                // Stream timed out — send a terminal event.
+                let err_sse = "event: error\ndata: LLM response timed out\n\n";
+                let _ = tx_clone
+                    .send(Ok(bytes::Bytes::from(err_sse.as_bytes().to_vec())))
+                    .await;
             }
         });
     }

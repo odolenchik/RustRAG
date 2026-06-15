@@ -27,6 +27,9 @@ pub struct LlmConfig {
     pub model: Option<String>,
     #[serde(default = "default_top_k")]
     pub top_k: usize,
+    /// Maximum size in bytes of the assembled context sent to the LLM.
+    /// Set to 0 or omit for the default (12 KB).
+    pub max_context_size: Option<usize>,
 }
 
 fn default_top_k() -> usize {

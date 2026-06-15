@@ -25,6 +25,10 @@ struct ServeArgs {
     /// Max requests per minute for rate limiting (default: 60)
     #[arg(long, default_value_t = 60)]
     rate_limit: u32,
+
+    /// Maximum context size in bytes sent to the LLM (env override: RUSRAG_MAX_CONTEXT_SIZE)
+    #[arg(long)]
+    max_context_size: Option<usize>,
 }
 
 #[derive(clap::Args)]

@@ -132,6 +132,14 @@ pub struct ChunkDiagnostics {
     /// Number of chunks that contain the "---" separator injected by `apply_overlap`.
     /// Chunks with separators have been given parent context from neighbours.
     pub chunks_with_parent_context: usize,
+
+    // ── Nesting-depth quality diagnostics ──
+    /// Per-file maximum nesting depth observed in indexed chunks.
+    pub max_nesting_per_file: std::collections::HashMap<String, usize>,
+    /// Overall average max-nesting-depth across all chunks that have it set.
+    pub avg_nesting_depth: f64,
+    /// Percentage of files where at least one chunk has nesting depth > 0 (indicates nested containers).
+    pub file_pct_with_nested_code: f64,
 }
 
 /// Compute diagnostics about chunking quality from a list of chunks.
@@ -140,6 +148,7 @@ pub struct ChunkDiagnostics {
 /// - distribution of symbol kinds
 /// - average and median chunk sizes (in lines)
 /// - whether overlap separators were injected (indicates good context preservation)
+/// - AST nesting-depth statistics per file (indicates parent-container chunking works)
 pub fn chunk_diagnostics(chunks: &[crate::indexer::Chunk]) -> ChunkDiagnostics {
     if chunks.is_empty() {
         return ChunkDiagnostics {
@@ -149,6 +158,10 @@ pub fn chunk_diagnostics(chunks: &[crate::indexer::Chunk]) -> ChunkDiagnostics {
             avg_lines_per_chunk: 0.0,
             median_overlap_between_chunks: 0.0,
             chunks_with_parent_context: 0,
+
+            max_nesting_per_file: std::collections::HashMap::new(),
+            avg_nesting_depth: 0.0,
+            file_pct_with_nested_code: 0.0,
         };
     }
 
@@ -156,7 +169,7 @@ pub fn chunk_diagnostics(chunks: &[crate::indexer::Chunk]) -> ChunkDiagnostics {
     let mut line_lengths: Vec<usize> = Vec::with_capacity(chunks.len());
     let mut has_separator_count = 0;
 
-    // Group chunks by file for overlap computation
+    // Group chunks by file for overlap and nesting computation
     let mut files: std::collections::HashMap<PathBuf, Vec<&crate::indexer::Chunk>> =
         std::collections::HashMap::new();
 
@@ -213,6 +226,39 @@ pub fn chunk_diagnostics(chunks: &[crate::indexer::Chunk]) -> ChunkDiagnostics {
 
     let avg_lines: f64 = line_lengths.iter().map(|&l| l as f64).sum::<f64>() / line_lengths.len() as f64;
 
+    // ── Nesting-depth diagnostics ──
+    let mut max_nesting_per_file: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    let mut nesting_depths: Vec<usize> = Vec::with_capacity(chunks.len());
+    let mut files_with_nested: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+
+    for chunk in chunks {
+        if let Some(d) = chunk.max_nesting_depth {
+            nesting_depths.push(d);
+            let key = chunk.file_path.display().to_string();
+            max_nesting_per_file
+                .entry(key)
+                .and_modify(|max| *max = (*max).max(d))
+                .or_insert(d);
+            if d > 0 {
+                files_with_nested.insert(chunk.file_path.clone());
+            }
+        }
+    }
+
+    let avg_nesting_depth: f64 = nesting_depths
+        .iter()
+        .map(|&d| d as f64)
+        .sum::<f64>()
+        .max(0.0)
+        / nesting_depths.len().max(1) as f64;
+
+    let file_pct_with_nested_code = if files.is_empty() {
+        0.0
+    } else {
+        (files_with_nested.len() as f64 / files.len() as f64) * 100.0
+    };
+
     ChunkDiagnostics {
         chunk_count: chunks.len(),
         file_count: files.len(),
@@ -220,6 +266,10 @@ pub fn chunk_diagnostics(chunks: &[crate::indexer::Chunk]) -> ChunkDiagnostics {
         avg_lines_per_chunk: avg_lines,
         median_overlap_between_chunks: median_overlap,
         chunks_with_parent_context: has_separator_count,
+
+        max_nesting_per_file,
+        avg_nesting_depth,
+        file_pct_with_nested_code,
     }
 }
 
@@ -375,7 +425,7 @@ mod tests {
 
     #[test]
     fn test_chunk_diagnostics_with_separators() {
-        use crate::indexer::Chunk;
+        use crate::indexer::{Chunk, SymbolKind};
         let chunks = vec![
             Chunk {
                 file_path: PathBuf::from("a.rs"),
@@ -384,6 +434,7 @@ mod tests {
                 module_name: "func_a".into(),
                 symbol_kind: SymbolKind::Function,
                 text: "fn a() {} \n---\ncontext_from_neighbor\n---\nfn a() {}".to_string(),
+                max_nesting_depth: Some(1),
             },
             Chunk {
                 file_path: PathBuf::from("a.rs"),
@@ -392,6 +443,7 @@ mod tests {
                 module_name: "func_b".into(),
                 symbol_kind: SymbolKind::Function,
                 text: "fn b() {}".to_string(), // no separator
+                max_nesting_depth: Some(0),
             },
         ];
 
@@ -399,11 +451,13 @@ mod tests {
         assert_eq!(diags.chunk_count, 2);
         assert_eq!(diags.file_count, 1);
         assert_eq!(diags.chunks_with_parent_context, 1);
+        // avg_nesting_depth = (1 + 0) / 2 = 0.5
+        assert!((diags.avg_nesting_depth - 0.5).abs() < 1e-9);
     }
 
     #[test]
     fn test_chunk_diagnostics_kind_breakdown() {
-        use crate::indexer::Chunk;
+        use crate::indexer::{Chunk, SymbolKind};
         let chunks = vec![
             Chunk {
                 file_path: PathBuf::from("a.rs"),
@@ -412,6 +466,7 @@ mod tests {
                 module_name: "f".into(),
                 symbol_kind: SymbolKind::Function,
                 text: "fn f() {}".to_string(),
+                max_nesting_depth: Some(0),
             },
             Chunk {
                 file_path: PathBuf::from("b.rs"),
@@ -420,6 +475,7 @@ mod tests {
                 module_name: "impl".into(),
                 symbol_kind: SymbolKind::ImplBlock,
                 text: "impl X {}".to_string(),
+                max_nesting_depth: Some(2),
             },
         ];
 
@@ -436,6 +492,4 @@ mod tests {
         );
     }
 
-    // Re-export SymbolKind for tests that need it.
-    use crate::indexer::SymbolKind;
-}
+  }

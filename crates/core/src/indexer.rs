@@ -52,6 +52,31 @@ pub struct Chunk {
     pub module_name: String,
     pub symbol_kind: SymbolKind,
     pub text: String,
+    /// Maximum AST nesting depth within this chunk (used for quality diagnostics).
+    #[serde(default)]
+    pub max_nesting_depth: Option<usize>,
+}
+
+impl Chunk {
+    /// Create a new chunk without nesting-depth tracking.
+    pub fn new(
+        file_path: PathBuf,
+        line_start: usize,
+        line_end: usize,
+        module_name: String,
+        symbol_kind: SymbolKind,
+        text: String,
+    ) -> Self {
+        Self {
+            file_path,
+            line_start,
+            line_end,
+            module_name,
+            symbol_kind,
+            text,
+            max_nesting_depth: None,
+        }
+    }
 }
 
 impl Chunk {
@@ -354,6 +379,46 @@ pub fn parse_and_extract(content: &str, file_path: &Path, chunks: &mut Vec<Chunk
     Ok(())
 }
 
+/// Compute the maximum AST nesting depth within a node's subtree.
+/// Only container-like nodes contribute to nesting; leaves don't add depth.
+fn compute_nesting_depth(node: tree_sitter::Node<'_>) -> usize {
+    let kind = node.kind();
+
+    // Check if this node is a container that adds one level of nesting
+    match kind {
+        "block" | "function_item" | "impl_item" | "mod_item" | "unsafe_block"
+        | "struct_expression" | "tuple_struct" | "for_statement" | "while_statement"
+        | "loop_statement" => {
+            // This is a container: 1 + max depth among children
+            let mut max_child = 0;
+            for child in node.children(&mut node.walk()) {
+                let d = compute_nesting_depth(child);
+                if d > max_child { max_child = d; }
+            }
+            1 + max_child
+        }
+        _ => {
+            // Non-container: just pass through the deepest child's depth (or 0 for leaves)
+            let mut max_child = 0;
+            for child in node.children(&mut node.walk()) {
+                let d = compute_nesting_depth(child);
+                if d > max_child { max_child = d; }
+            }
+            max_child
+        }
+    }
+}
+
+/// Check whether a node kind represents an atomic unit that should not be recursed into.
+fn is_atomic_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "macro_invocation"
+            | "use_declaration" | "use_tree"
+            | "extern_crate_declaration" | "attribute"
+    )
+}
+
 fn extract_nodes(
     node: tree_sitter::Node<'_>,
     content: &str,
@@ -361,13 +426,49 @@ fn extract_nodes(
     module_prefix: &str,
     chunks: &mut Vec<Chunk>,
 ) {
-    match node.kind() {
+    let kind = node.kind();
+
+    // ── Macros: macro_definition → extract as a chunk, skip recursion into body.
+    //     macro_invocation / use_declaration / attributes → skip entirely (not useful for embedding).
+    if kind == "macro_definition" {
+        let name = node
+            .child_by_field_name("name")
+            .map(|n| n.utf8_text(content.as_bytes()).unwrap_or("<anon>"))
+            .unwrap_or("<anon>")
+            .to_string();
+
+        chunks.push(Chunk {
+            file_path: file_path.to_path_buf(),
+            line_start: node.start_byte(),
+            line_end: node.end_byte(),
+            module_name: format!("{}/macro {}", module_prefix, name),
+            symbol_kind: SymbolKind::Macro,
+            text: content[node.start_byte()..node.end_byte()].to_string(),
+            max_nesting_depth: Some(compute_nesting_depth(node)),
+        });
+        return;
+    }
+
+    // Other atomic kinds (invocation, use, extern_crate, attribute) — skip entirely.
+    if is_atomic_kind(kind) {
+        return;
+    }
+
+    match kind {
         "function_item" => {
             let name = node
                 .child_by_field_name("name")
                 .map(|n| n.utf8_text(content.as_bytes()).unwrap_or("<anon>"))
                 .unwrap_or("<anon>")
                 .to_string();
+
+            // If this function is inside an impl_item, it's a method — skip creating a separate chunk.
+            // The parent impl_block chunk already contains the full text including methods.
+            if node.parent().is_some_and(|p| p.kind() == "impl_item") {
+                return;
+            }
+
+            let max_depth = compute_nesting_depth(node);
 
             chunks.push(Chunk {
                 file_path: file_path.to_path_buf(),
@@ -376,6 +477,7 @@ fn extract_nodes(
                 module_name: format!("{}/{}", module_prefix, name),
                 symbol_kind: SymbolKind::Function,
                 text: content[node.start_byte()..node.end_byte()].to_string(),
+                max_nesting_depth: Some(max_depth),
             });
         }
         "impl_item" => {
@@ -385,16 +487,32 @@ fn extract_nodes(
                 .unwrap_or("<unknown>")
                 .to_string();
 
+            // Determine if this is a trait impl (has "trait" in the kind string)
+            let symbol_kind = if kind.contains("trait") {
+                SymbolKind::TraitImpl
+            } else {
+                SymbolKind::ImplBlock
+            };
+
+            let module_name = format!("{}/impl {}", module_prefix, self_ty);
+            let text = content[node.start_byte()..node.end_byte()].to_string();
+            let max_depth = compute_nesting_depth(node) + 1; // +1 for the impl block itself
+
             chunks.push(Chunk {
                 file_path: file_path.to_path_buf(),
                 line_start: node.start_byte(),
                 line_end: node.end_byte(),
-                module_name: format!("{}/impl {}", module_prefix, self_ty),
-                symbol_kind: SymbolKind::ImplBlock,
-                text: content[node.start_byte()..node.end_byte()].to_string(),
+                module_name,
+                symbol_kind,
+                text,
+                max_nesting_depth: Some(max_depth),
             });
+
+            // Do NOT recurse into children — the impl chunk's text already includes all methods.
         }
         "unsafe_block" => {
+            let max_depth = compute_nesting_depth(node);
+
             chunks.push(Chunk {
                 file_path: file_path.to_path_buf(),
                 line_start: node.start_byte(),
@@ -402,6 +520,7 @@ fn extract_nodes(
                 module_name: format!("{}/unsafe", module_prefix),
                 symbol_kind: SymbolKind::UnsafeRegion,
                 text: content[node.start_byte()..node.end_byte()].to_string(),
+                max_nesting_depth: Some(max_depth),
             });
         }
         "mod_item" => {
@@ -420,6 +539,76 @@ fn extract_nodes(
             for child in node.children(&mut node.walk()) {
                 extract_nodes(child, content, file_path, &new_prefix, chunks);
             }
+        }
+        "struct_item" => {
+            let name = node
+                .child_by_field_name("name")
+                .map(|n| n.utf8_text(content.as_bytes()).unwrap_or("<anon>"))
+                .unwrap_or("<anon>")
+                .to_string();
+
+            chunks.push(Chunk {
+                file_path: file_path.to_path_buf(),
+                line_start: node.start_byte(),
+                line_end: node.end_byte(),
+                module_name: format!("{}/{}", module_prefix, name),
+                symbol_kind: SymbolKind::Struct,
+                text: content[node.start_byte()..node.end_byte()].to_string(),
+                max_nesting_depth: Some(compute_nesting_depth(node)),
+            });
+        }
+        "enum_item" => {
+            let name = node
+                .child_by_field_name("name")
+                .map(|n| n.utf8_text(content.as_bytes()).unwrap_or("<anon>"))
+                .unwrap_or("<anon>")
+                .to_string();
+
+            chunks.push(Chunk {
+                file_path: file_path.to_path_buf(),
+                line_start: node.start_byte(),
+                line_end: node.end_byte(),
+                module_name: format!("{}/{}", module_prefix, name),
+                symbol_kind: SymbolKind::Enum,
+                text: content[node.start_byte()..node.end_byte()].to_string(),
+                max_nesting_depth: Some(compute_nesting_depth(node)),
+            });
+        }
+        "trait_item" => {
+            let name = node
+                .child_by_field_name("name")
+                .map(|n| n.utf8_text(content.as_bytes()).unwrap_or("<anon>"))
+                .unwrap_or("<anon>")
+                .to_string();
+
+            chunks.push(Chunk {
+                file_path: file_path.to_path_buf(),
+                line_start: node.start_byte(),
+                line_end: node.end_byte(),
+                module_name: format!("{}/trait {}", module_prefix, name),
+                symbol_kind: SymbolKind::TraitImpl,
+                text: content[node.start_byte()..node.end_byte()].to_string(),
+                max_nesting_depth: Some(compute_nesting_depth(node)),
+            });
+
+            // Don't recurse — trait body is already in the chunk text.
+        }
+        "union_item" => {
+            let name = node
+                .child_by_field_name("name")
+                .map(|n| n.utf8_text(content.as_bytes()).unwrap_or("<anon>"))
+                .unwrap_or("<anon>")
+                .to_string();
+
+            chunks.push(Chunk {
+                file_path: file_path.to_path_buf(),
+                line_start: node.start_byte(),
+                line_end: node.end_byte(),
+                module_name: format!("{}/{}", module_prefix, name),
+                symbol_kind: SymbolKind::Struct, // reuse Struct for unions
+                text: content[node.start_byte()..node.end_byte()].to_string(),
+                max_nesting_depth: Some(compute_nesting_depth(node)),
+            });
         }
         _ => {
             for child in node.children(&mut node.walk()) {
