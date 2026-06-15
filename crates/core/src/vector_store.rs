@@ -1,4 +1,4 @@
-use anyhow::Result;
+use crate::error::RagCoreError;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
@@ -50,7 +50,7 @@ pub struct VectorStore {
 
 impl VectorStore {
     /// Open or create a vector store at the given directory.
-    pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self> {
+    pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self, RagCoreError> {
         let path = path.as_ref();
         std::fs::create_dir_all(path)?;
         // Restrict directory permissions on Unix systems (owner-only access).
@@ -83,11 +83,11 @@ impl VectorStore {
     /// Get the default .rustrag path inside a workspace.
     pub fn for_workspace(workspace_root: impl AsRef<std::path::Path>) -> Self {
         let dir = workspace_root.as_ref().join(".rustrag");
-        VectorStore::open(&dir).expect("Failed to create vector store directory")
+        VectorStore::open(&dir).unwrap_or_else(|e| panic!("Failed to create vector store directory '{}': {}", dir.display(), e))
     }
 
     /// Insert documents into the vector store.
-    pub fn insert_documents(&self, documents: &[Document]) -> Result<()> {
+    pub fn insert_documents(&self, documents: &[Document]) -> Result<(), RagCoreError> {
         if documents.is_empty() {
             return Ok(());
         }
@@ -122,7 +122,7 @@ impl VectorStore {
     }
 
     /// Remove documents matching the given IDs from index.jsonl (atomic replace).
-    pub fn remove_documents(&self, ids: &[String]) -> Result<()> {
+    pub fn remove_documents(&self, ids: &[String]) -> Result<(), RagCoreError> {
         if ids.is_empty() {
             return Ok(());
         }
@@ -156,7 +156,7 @@ impl VectorStore {
     }
 
     /// List all document IDs currently stored in the index.
-    pub fn list_document_ids(&self) -> Result<Vec<String>> {
+    pub fn list_document_ids(&self) -> Result<Vec<String>, RagCoreError> {
         let docs = self.load_documents()?;
         Ok(docs
             .iter()
@@ -165,7 +165,7 @@ impl VectorStore {
     }
 
     /// Lazy-load documents from index.jsonl, using mtime-based cache.
-    fn load_documents(&self) -> Result<Vec<serde_json::Value>> {
+    fn load_documents(&self) -> Result<Vec<serde_json::Value>, RagCoreError> {
         let index_path = self.path.join("index.jsonl");
         if !index_path.exists() {
             return Ok(Vec::new());
@@ -193,7 +193,12 @@ impl VectorStore {
         let documents: Vec<serde_json::Value> = content
             .lines()
             .filter(|line| !line.trim().is_empty())
-            .map(serde_json::from_str)
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).map_err(|e| {
+                RagCoreError::VectorStore(
+                    format!("parse JSON on line: {}", e),
+                    Box::new(std::io::Error::other(e)),
+                )
+            }))
             .collect::<Result<Vec<_>, _>>()?;
 
         // Update cache and return a clone for the caller
@@ -222,7 +227,7 @@ impl VectorStore {
         &self,
         query_vec: &[f32],
         top_k: usize,
-    ) -> Result<Vec<SearchResult>> {
+    ) -> Result<Vec<SearchResult>, RagCoreError> {
         self.hybrid_search_internal(query_vec, "", top_k, 1.0, None, true)
     }
 
@@ -235,7 +240,7 @@ impl VectorStore {
         top_k: usize,
         alpha: f64,
         filters: Option<&SearchFilters>,
-    ) -> Result<Vec<SearchResult>> {
+    ) -> Result<Vec<SearchResult>, RagCoreError> {
         self.hybrid_search_internal(
             query_vec,
             query_text,
@@ -255,7 +260,7 @@ impl VectorStore {
         alpha: f64,
         filters: Option<&SearchFilters>,
         pure_vector: bool,
-    ) -> Result<Vec<SearchResult>> {
+    ) -> Result<Vec<SearchResult>, RagCoreError> {
         let documents = self.load_documents()?;
 
         if documents.is_empty() {
@@ -371,12 +376,11 @@ impl VectorStore {
                         "struct" => SymbolKind::Struct,
                         "enum" => SymbolKind::Enum,
                         "macro" => SymbolKind::Macro,
-                        _ => anyhow::bail!(
-                            "Unknown SymbolKind in index: {} (doc id: {}, file: {})",
-                            s,
-                            doc_id_for_err,
-                            file_path_for_err
-                        ),
+                        _ => return Err(RagCoreError::UnknownSymbolKind(
+                                s.to_string(),
+                                doc_id_for_err.clone(),
+                                file_path_for_err.clone(),
+                            )),
                     };
                     Some(kind)
                 }
@@ -402,7 +406,7 @@ impl VectorStore {
     fn build_inverted_index(
         &self,
         documents: &[serde_json::Value],
-    ) -> Result<(InvertedIndex, HashMap<String, DocStat>)> {
+    ) -> Result<(InvertedIndex, HashMap<String, DocStat>), RagCoreError> {
         let mut inverted: InvertedIndex = HashMap::new();
         let mut doc_stats: HashMap<String, DocStat> = HashMap::new();
 
@@ -444,7 +448,7 @@ impl VectorStore {
     fn get_bm25_cache(
         &self,
         documents: &[serde_json::Value],
-    ) -> Result<(InvertedIndex, HashMap<String, DocStat>)> {
+    ) -> Result<(InvertedIndex, HashMap<String, DocStat>), RagCoreError> {
         let index_path = self.path.join("index.jsonl");
 
         // Compute current file state for cache invalidation
@@ -584,7 +588,7 @@ impl SearchFilters {
 pub use crate::indexer::SymbolKind;
 
 /// Parse a SymbolKind from its lowercase string representation.
-fn parse_symbol_kind(s: &str) -> anyhow::Result<SymbolKind> {
+fn parse_symbol_kind(s: &str) -> Result<SymbolKind, RagCoreError> {
     match s.to_lowercase().as_str() {
         "function" => Ok(SymbolKind::Function),
         "implblock" => Ok(SymbolKind::ImplBlock),
@@ -594,7 +598,11 @@ fn parse_symbol_kind(s: &str) -> anyhow::Result<SymbolKind> {
         "struct" => Ok(SymbolKind::Struct),
         "enum" => Ok(SymbolKind::Enum),
         "macro" => Ok(SymbolKind::Macro),
-        other => anyhow::bail!("Unknown SymbolKind in index: {}", other),
+        other => Err(RagCoreError::UnknownSymbolKind(
+            other.to_string(),
+            String::new(),
+            String::new(),
+        )),
     }
 }
 

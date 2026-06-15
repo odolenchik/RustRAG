@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use crate::error::RagCoreError;
 use sha2::{Digest, Sha256};
 use std::fmt::Write as FmtWrite;
 use std::path::{Path, PathBuf};
@@ -82,30 +82,56 @@ fn model_dir() -> PathBuf {
 }
 
 /// Initialize the embedding model from local ONNX + tokenizer files.
-fn try_init_embedder(model_dir: &Path) -> Result<TextEmbedding> {
-    let onnx_bytes =
-        std::fs::read(model_dir.join("model.onnx")).context("Failed to read model.onnx")?;
+fn try_init_embedder(model_dir: &Path) -> Result<TextEmbedding, RagCoreError> {
+    let onnx_bytes = std::fs::read(model_dir.join("model.onnx")).map_err(|e| {
+        RagCoreError::Embedding(
+            "Failed to read model.onnx".to_string(),
+            Box::new(std::io::Error::other(e)),
+        )
+    })?;
 
     let tokenizer_files = TokenizerFiles {
-        tokenizer_file: read_file_to_bytes(&model_dir.join("tokenizer.json"))
-            .context("Failed to read tokenizer.json")?,
-        config_file: read_file_to_bytes(&model_dir.join("config.json"))
-            .context("Failed to read config.json")?,
+        tokenizer_file: read_file_to_bytes(&model_dir.join("tokenizer.json")).map_err(|e| {
+            RagCoreError::Embedding(
+                "Failed to read tokenizer.json".to_string(),
+                Box::new(std::io::Error::other(e)),
+            )
+        })?,
+        config_file: read_file_to_bytes(&model_dir.join("config.json")).map_err(|e| {
+            RagCoreError::Embedding(
+                "Failed to read config.json".to_string(),
+                Box::new(std::io::Error::other(e)),
+            )
+        })?,
         special_tokens_map_file: read_file_to_bytes(&model_dir.join("special_tokens_map.json"))
-            .context("Failed to read special_tokens_map.json")?,
+            .map_err(|e| {
+                RagCoreError::Embedding(
+                    "Failed to read special_tokens_map.json".to_string(),
+                    Box::new(std::io::Error::other(e)),
+                )
+            })?,
         tokenizer_config_file: read_file_to_bytes(&model_dir.join("tokenizer_config.json"))
-            .context("Failed to read tokenizer_config.json")?,
+            .map_err(|e| {
+                RagCoreError::Embedding(
+                    "Failed to read tokenizer_config.json".to_string(),
+                    Box::new(std::io::Error::other(e)),
+                )
+            })?,
     };
 
     let user_model =
         UserDefinedEmbeddingModel::new(onnx_bytes, tokenizer_files).with_pooling(Pooling::Cls);
 
-    TextEmbedding::try_new_from_user_defined(user_model, InitOptionsUserDefined::default())
-        .context("Failed to initialize user-defined embedding model")
+    TextEmbedding::try_new_from_user_defined(user_model, InitOptionsUserDefined::default()).map_err(|e| {
+        RagCoreError::Embedding(
+            "Failed to initialize user-defined embedding model".to_string(),
+            Box::new(std::io::Error::other(e)),
+        )
+    })
 }
 
 /// Initialize the embedding model. If not found in any location, attempts auto-download from HuggingFace.
-fn init_embedder() -> Result<TextEmbedding> {
+fn init_embedder() -> Result<TextEmbedding, RagCoreError> {
     let dir = model_dir();
 
     if let Ok(em) = try_init_embedder(&dir) {
@@ -116,53 +142,69 @@ fn init_embedder() -> Result<TextEmbedding> {
     let home = std::env::var("HOME").ok();
     let hf_target = match home.as_ref() {
         Some(h) => PathBuf::from(h).join(".cache/huggingface/hub"),
-        None => anyhow::bail!(
-            "Cannot determine HOME to download model.\n\
-             Please download manually:\n\n  rust-rag download ~/.cache/huggingface/hub/\n\
-             \nOr set RUSRAG_MODEL_PATH."
-        ),
+        None => return Err(RagCoreError::Embedding(
+            "Cannot determine HOME to download model. Please download manually:\n  rust-rag download ~/.cache/huggingface/hub/\nOr set RUSRAG_MODEL_PATH.".to_string(),
+            Box::new(std::io::Error::other("HOME not set")),
+        )),
     };
 
     println!("Model not found, downloading from HuggingFace...");
     if let Err(e) = download_model(&hf_target) {
-        anyhow::bail!(
-            "Failed to auto-download model: {e}\n\n\
-             Please try manually:\n  rust-rag download ~/.cache/huggingface/hub/"
-        );
+        return Err(RagCoreError::Embedding(
+            format!("Failed to auto-download model: {}\n\nPlease try manually:\n  rust-rag download ~/.cache/huggingface/hub/", e),
+            Box::new(std::io::Error::other(e)),
+        ));
     }
 
     println!("Model downloaded. Trying again...");
-    try_init_embedder(&hf_target).context("Failed to load embedding model after download")
+    try_init_embedder(&hf_target).map_err(|e| {
+        RagCoreError::Embedding(
+            "Failed to load embedding model after download".to_string(),
+            Box::new(std::io::Error::other(format!("{:?}", e))),
+        )
+    })
 }
 
 /// Lazy-initialized singleton embedder — loads ONNX model once on first use.
-static EMBEDDER: OnceLock<Result<TextEmbedding, anyhow::Error>> = OnceLock::new();
+static EMBEDDER: OnceLock<Result<TextEmbedding, RagCoreError>> = OnceLock::new();
 
 /// Get the lazy-initialized embedder, initializing it on first call.
 /// Returns an error if the ONNX model failed to load instead of panicking.
-fn get_embedder() -> Result<&'static TextEmbedding> {
-    EMBEDDER
-        .get_or_init(init_embedder)
+fn get_embedder() -> Result<&'static TextEmbedding, RagCoreError> {
+    EMBEDDER.get_or_init(|| init_embedder())
         .as_ref()
-        .map_err(|e| anyhow::anyhow!("Embedding model initialization failed: {e}"))
+        .map_err(|e| RagCoreError::Embedding(
+            "Embedding model initialization failed".to_string(),
+            Box::new(std::io::Error::other(format!("{:?}", e))),
+        ))
 }
 
 /// Embed a single text chunk into a vector using the local embedding model.
-pub fn embed(text: &str) -> Result<Vec<f32>> {
+pub fn embed(text: &str) -> Result<Vec<f32>, RagCoreError> {
     let result = get_embedder()?
         .embed(vec![text.to_string()], None /* batch_size */)
-        .context("Failed to compute embedding")?;
+        .map_err(|e| {
+            RagCoreError::Embedding(
+                "Failed to compute embedding".to_string(),
+                Box::new(std::io::Error::other(e)),
+            )
+        })?;
 
     // Result is Vec<Embedding> — iterate over batches, flatten to Vec<f32>
     Ok(result.into_iter().flatten().collect())
 }
 
 /// Embed multiple texts in a single ONNX inference call. Returns one vector per input text.
-pub fn embed_batch(texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+pub fn embed_batch(texts: &[&str]) -> Result<Vec<Vec<f32>>, RagCoreError> {
     let strings: Vec<String> = texts.iter().map(|t| t.to_string()).collect();
     let results = get_embedder()?
         .embed(strings, None)
-        .context("Failed to compute batch embedding")?;
+        .map_err(|e| {
+            RagCoreError::Embedding(
+                "Failed to compute batch embedding".to_string(),
+                Box::new(std::io::Error::other(e)),
+            )
+        })?;
 
     Ok(results.into_iter().collect())
 }
@@ -210,7 +252,7 @@ impl EmbedCache {
 
     /// Look up cached embeddings for texts, returning (Vec<Option<Vec<f32>>>).
     /// Returns None for uncached entries.
-    pub fn lookup(&self, texts: &[&str]) -> Result<Vec<Option<Vec<f32>>>> {
+    pub fn lookup(&self, texts: &[&str]) -> Result<Vec<Option<Vec<f32>>>, RagCoreError> {
         let cache = self.read_cache()?;
         Ok(texts
             .iter()
@@ -218,7 +260,7 @@ impl EmbedCache {
             .collect())
     }
 
-    fn read_cache(&self) -> Result<std::collections::HashMap<String, Vec<f32>>> {
+    fn read_cache(&self) -> Result<std::collections::HashMap<String, Vec<f32>>, RagCoreError> {
         let mut cache = std::collections::HashMap::new();
         if !self.path.exists() {
             return Ok(cache);
@@ -269,7 +311,7 @@ impl EmbedCache {
         texts: &[&str],
         embeddings: &[Vec<f32>],
         hit_count: &mut usize,
-    ) -> Result<()> {
+    ) -> Result<(), RagCoreError> {
         if texts.is_empty() || embeddings.is_empty() {
             return Ok(());
         }
@@ -300,7 +342,7 @@ impl EmbedCache {
     }
 
     /// Clear the embed cache file.
-    pub fn clear(&self) -> Result<()> {
+    pub fn clear(&self) -> Result<(), RagCoreError> {
         if self.path.exists() {
             std::fs::remove_file(&self.path)?;
         }
@@ -309,19 +351,24 @@ impl EmbedCache {
 }
 
 /// Get the path where embedding models are stored (kept for backward compatibility).
-pub fn model_cache_dir() -> Result<PathBuf> {
+pub fn model_cache_dir() -> Result<PathBuf, RagCoreError> {
     let base = dirs::cache_dir()
         .or_else(dirs::data_local_dir)
         .unwrap_or_else(|| PathBuf::from("/tmp/.rustrag/cache"));
 
     let dir = base.join("rustrag");
-    std::fs::create_dir_all(&dir)?;
+    std::fs::create_dir_all(&dir).map_err(|e| {
+        RagCoreError::Embedding(
+            "Failed to create model cache directory".to_string(),
+            Box::new(std::io::Error::other(e)),
+        )
+    })?;
     Ok(dir)
 }
 
 /// Download the bge-small-en-v1.5 model files from HuggingFace and save them to a target directory.
 /// Verifies SHA-256 checksums if RUSRAG_MODEL_CHECKSUMS env var is set (newline-separated `sha256:filename` pairs).
-pub fn download_model(target: &Path) -> Result<()> {
+pub fn download_model(target: &Path) -> Result<(), RagCoreError> {
     let repo = "BAAI/bge-small-en-v1.5";
     let revision = "main";
 
@@ -352,13 +399,17 @@ pub fn download_model(target: &Path) -> Result<()> {
             repo, revision, remote_path
         );
 
-        let response = client.get(&url).send()?;
+        let response = client.get(&url).send().map_err(|e| {
+            RagCoreError::Embedding(
+                format!("HTTP request failed: {}", e),
+                Box::new(std::io::Error::other(e)),
+            )
+        })?;
         if !response.status().is_success() {
-            anyhow::bail!(
-                "Failed to download {}: HTTP {}",
-                remote_path,
-                response.status()
-            );
+            return Err(RagCoreError::Embedding(
+                format!("Failed to download {}: HTTP {}", remote_path, response.status()),
+                Box::new(std::io::Error::other("HTTP error")),
+            ));
         }
 
         // Validate content-type for critical files (ONNX model and config files must not be HTML/error pages).
@@ -391,12 +442,10 @@ pub fn download_model(target: &Path) -> Result<()> {
         if let Some(expected_hash) = expected_checksums.get(local_name) {
             let digest = sha256_hex(&bytes);
             if digest[..] != expected_hash[..] {
-                anyhow::bail!(
-                    "Checksum mismatch for {}: expected {}, got {}",
-                    local_name,
-                    expected_hash,
-                    digest
-                );
+                return Err(RagCoreError::Embedding(
+                    format!("Checksum mismatch for {}: expected {}, got {}", local_name, expected_hash, digest),
+                    Box::new(std::io::Error::other("checksum")),
+                ));
             } else {
                 println!("  ✓ Checksum OK");
             }

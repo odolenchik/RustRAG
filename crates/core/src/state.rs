@@ -1,4 +1,4 @@
-use anyhow::Result;
+use crate::error::RagCoreError;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -45,30 +45,61 @@ impl Default for IndexState {
 
 impl IndexState {
     /// Load state from disk. Returns a default (empty) state if the file doesn't exist.
-    pub fn load(state_path: &Path) -> Result<Self> {
+    pub fn load(state_path: &Path) -> Result<Self, RagCoreError> {
         let path = state_path.join("index_state.json");
         if !path.exists() {
             return Ok(Self::new());
         }
-        let content = fs::read_to_string(&path)?;
-        let state: IndexState = serde_json::from_str(&content)?;
+        let content = fs::read_to_string(&path).map_err(|e| {
+            RagCoreError::State(Box::new(std::io::Error::other(format!(
+                "reading '{}': {}",
+                path.display(),
+                e
+            ))))
+        })?;
+        let state: IndexState = serde_json::from_str(&content).map_err(|e| {
+            RagCoreError::State(Box::new(std::io::Error::other(format!(
+                "parsing '{}': {}",
+                path.display(),
+                e
+            ))))
+        })?;
         Ok(state)
     }
 
     /// Persist state to disk (atomic via temp file + rename).
-    pub fn save(&self, state_path: &Path) -> Result<()> {
+    pub fn save(&self, state_path: &Path) -> Result<(), RagCoreError> {
         let path = state_path.join("index_state.json");
         let tmp_path = state_path.join("index_state.json.tmp");
         let content = serde_json::to_string_pretty(self)?;
-        fs::write(&tmp_path, content.as_bytes())?;
-        fs::rename(&tmp_path, &path)?;
+        fs::write(&tmp_path, content.as_bytes()).map_err(|e| {
+            RagCoreError::State(Box::new(std::io::Error::other(format!(
+                "writing '{}': {}",
+                tmp_path.display(),
+                e
+            ))))
+        })?;
+        fs::rename(&tmp_path, &path).map_err(|e| {
+            RagCoreError::State(Box::new(std::io::Error::other(format!(
+                "renaming '{}' to '{}': {}",
+                tmp_path.display(),
+                path.display(),
+                e
+            ))))
+        })?;
         Ok(())
     }
 
     /// Compute SHA-256 hash of a file's contents.
-    pub fn compute_file_hash(path: &Path) -> Result<String> {
+    pub fn compute_file_hash(path: &Path) -> Result<String, RagCoreError> {
         let mut hasher = Sha256::new();
-        let reader = fs::File::open(path)?;
+        let reader = fs::File::open(path).map_err(|e| {
+            RagCoreError::State(Box::new(std::io::Error::other(format!(
+                "opening '{}': {}",
+                path.display(),
+                e
+            ))))
+        })?;
         let mut buf_reader = BufReader::new(reader);
         use std::io::Read;
         let mut buf = [0u8; 8192];
@@ -83,7 +114,7 @@ impl IndexState {
     }
 
     /// Compare current workspace files against saved state.
-    /// Returns (new_files, changed_files, unchanged_file_paths, removed_chunk_ids).
+    /// Returns (new_files, changed_files, removed_chunk_ids).
     pub fn compare(
         &self,
         current_files: &HashMap<PathBuf, String>, // path -> sha256 of current content

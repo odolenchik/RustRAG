@@ -1,4 +1,4 @@
-use anyhow::Result;
+use crate::error::RagCoreError;
 use serde::Deserialize;
 use std::path::Path;
 
@@ -35,19 +35,33 @@ fn default_top_k() -> usize {
 
 impl Config {
     /// Load config from `.rustrag.toml` in the given directory (workspace root).
-    pub fn load(workspace_root: &Path) -> Result<Self> {
+    /// Returns a default (empty) config when no file is found so that callers
+    /// can continue without it.
+    pub fn load(workspace_root: &Path) -> Result<Self, RagCoreError> {
         let config_path = workspace_root.join(".rustrag.toml");
         if !config_path.exists() {
             return Ok(Self::default());
         }
 
-        let content = std::fs::read_to_string(&config_path)?;
-        let config: Config = toml::from_str(&content)?;
+        let content = std::fs::read_to_string(&config_path).map_err(|e| {
+            RagCoreError::Config(Box::new(std::io::Error::other(format!(
+                "reading '{}': {}",
+                config_path.display(),
+                e
+            ))))
+        })?;
+        let config: Config = toml::from_str(&content).map_err(|e| {
+            RagCoreError::Config(Box::new(std::io::Error::other(format!(
+                "parsing '{}': {}",
+                config_path.display(),
+                e
+            ))))
+        })?;
         Ok(config)
     }
 
     /// Load config from the current directory or any ancestor.
-    pub fn find() -> Result<Self> {
+    pub fn find() -> Result<Self, RagCoreError> {
         for dir in std::env::current_dir()?.ancestors() {
             let config_path = dir.join(".rustrag.toml");
             if config_path.exists() {

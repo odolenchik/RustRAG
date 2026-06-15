@@ -1,17 +1,17 @@
-use anyhow::Result;
 use std::collections::HashMap;
 
+use crate::error::RagCoreError;
 use crate::indexer::Chunk;
-use crate::vector_store::SearchResult;
+use crate::vector_store::{SearchResult, VectorStore};
 
 /// Retrieve relevant chunks for a given query from an existing vector store.
 /// Uses hybrid search (BM25 + cosine similarity) by default.
 pub fn retrieve(
     query: &str,
     embedding: &[f32],
-    vector_store: &crate::vector_store::VectorStore,
+    vector_store: &VectorStore,
     top_k: usize,
-) -> Result<Vec<SearchResult>> {
+) -> Result<Vec<SearchResult>, RagCoreError> {
     // Hybrid search with alpha=0.7 (70% vector / 30% BM25 blend is a good starting point)
     let results = vector_store.hybrid_search(embedding, query, top_k, 0.7, None)?;
     Ok(results)
@@ -22,7 +22,7 @@ pub fn retrieve_from_chunks(
     chunks: &[Chunk],
     query: &str,
     top_k: usize,
-) -> Result<Vec<SearchResult>> {
+) -> Result<Vec<SearchResult>, RagCoreError> {
     let query_embedding = crate::embedding::embed(query)?;
 
     // Collect texts that pass the size filter, preserving original order for batch embedding
@@ -76,7 +76,7 @@ pub fn retrieve_hybrid(
     _graph: &petgraph::Graph<crate::callgraph::Symbol, f32>,
     _name_to_index: &HashMap<String, usize>,
     top_k: usize,
-) -> Result<Vec<SearchResult>> {
+) -> Result<Vec<SearchResult>, RagCoreError> {
     // For MVP, fall back to vector-only search.
     retrieve_from_chunks(chunks, query, top_k)
 }

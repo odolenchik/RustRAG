@@ -1,4 +1,4 @@
-use anyhow::Result;
+use crate::error::RagCoreError;
 use petgraph::graph::{Graph, NodeIndex};
 use ra_ap_syntax::{ast::AstNode, SourceFile};
 use std::collections::HashMap;
@@ -15,7 +15,7 @@ pub struct Symbol {
 /// CallExpr nodes to find which functions are called within.
 pub fn build_call_graph(
     chunks: &[crate::indexer::Chunk],
-) -> Result<(Graph<Symbol, f32>, HashMap<String, NodeIndex>)> {
+) -> Result<(Graph<Symbol, f32>, HashMap<String, NodeIndex>), RagCoreError> {
     let mut graph = Graph::<Symbol, f32>::new();
     let mut name_to_index: HashMap<String, NodeIndex> = HashMap::new();
 
@@ -54,7 +54,7 @@ pub fn build_call_graph(
 }
 
 /// Extract call edges from chunks using ra_ap_syntax AST parsing.
-fn extract_call_edges(chunks: &[crate::indexer::Chunk]) -> Result<HashMap<String, Vec<String>>> {
+fn extract_call_edges(chunks: &[crate::indexer::Chunk]) -> Result<HashMap<String, Vec<String>>, RagCoreError> {
     let mut edges = HashMap::<String, Vec<String>>::new();
 
     for chunk in chunks {

@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use crate::error::RagCoreError;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -222,16 +222,26 @@ pub fn apply_overlap(chunks: &mut [Chunk]) {
 }
 
 /// Walk a Cargo workspace directory and extract all code chunks.
-pub fn index_workspace(root: &Path) -> Result<Vec<Chunk>> {
+pub fn index_workspace(root: &Path) -> Result<Vec<Chunk>, RagCoreError> {
     let mut chunks = Vec::new();
 
     let manifest = root.join("Cargo.toml");
     if !manifest.exists() {
-        return Err(anyhow::anyhow!("No Cargo.toml found at {}", root.display()));
+        return Err(RagCoreError::MissingCargoToml(root.to_path_buf()));
     }
 
-    let cargo_content = std::fs::read_to_string(&manifest)?;
-    let cargo_toml: toml::Value = cargo_content.parse()?;
+    let cargo_content = std::fs::read_to_string(&manifest).map_err(|e| {
+        RagCoreError::FileRead(
+            manifest.clone(),
+            Box::new(std::io::Error::other(format!("reading Cargo.toml: {}", e))),
+        )
+    })?;
+    let cargo_toml: toml::Value = cargo_content.parse().map_err(|e| {
+        RagCoreError::FileRead(
+            manifest.clone(),
+            Box::new(std::io::Error::other(format!("parsing Cargo.toml: {}", e))),
+        )
+    })?;
 
     let member_paths = extract_workspace_members(&cargo_toml, root);
 
@@ -290,7 +300,7 @@ pub fn extract_workspace_members(cargo: &toml::Value, root: &Path) -> Vec<PathBu
     paths
 }
 
-fn collect_rs_files(dir: &Path, chunks: &mut Vec<Chunk>) -> Result<()> {
+fn collect_rs_files(dir: &Path, chunks: &mut Vec<Chunk>) -> Result<(), RagCoreError> {
     for entry in walkdir::WalkDir::new(dir)
         .min_depth(1)
         .max_depth(5)
@@ -302,8 +312,12 @@ fn collect_rs_files(dir: &Path, chunks: &mut Vec<Chunk>) -> Result<()> {
             continue;
         }
 
-        let content = std::fs::read_to_string(path)
-            .with_context(|| format!("Failed to read {}", path.display()))?;
+        let content = std::fs::read_to_string(path).map_err(|e| {
+            RagCoreError::FileRead(
+                path.to_path_buf(),
+                Box::new(std::io::Error::other(format!("reading file: {}", e))),
+            )
+        })?;
 
         parse_and_extract(&content, path, chunks)?;
     }
@@ -311,15 +325,21 @@ fn collect_rs_files(dir: &Path, chunks: &mut Vec<Chunk>) -> Result<()> {
     Ok(())
 }
 
-pub fn parse_and_extract(content: &str, file_path: &Path, chunks: &mut Vec<Chunk>) -> Result<()> {
+pub fn parse_and_extract(content: &str, file_path: &Path, chunks: &mut Vec<Chunk>) -> Result<(), RagCoreError> {
     let mut parser = tree_sitter::Parser::new();
-    parser
-        .set_language(&tree_sitter_rust::LANGUAGE.into())
-        .context("Failed to set tree-sitter-rust language")?;
+    if let Err(e) = parser.set_language(&tree_sitter_rust::LANGUAGE.into()) {
+        return Err(RagCoreError::ParseError(
+            file_path.to_path_buf(),
+            Box::new(std::io::Error::other(format!("setting language: {}", e))),
+        ));
+    }
 
-    let tree = parser
-        .parse(content, None)
-        .context("Failed to parse source file with tree-sitter")?;
+    let tree = parser.parse(content, None).ok_or_else(|| {
+        RagCoreError::ParseError(
+            file_path.to_path_buf(),
+            Box::new(std::io::Error::other("tree-sitter parse failed (unreachable)")),
+        )
+    })?;
 
     extract_nodes(tree.root_node(), content, file_path, "", chunks);
 
