@@ -714,3 +714,100 @@ pub fn download_model(target: &str) -> Result<()> {
     rust_rag_core::embedding::download_model(&path)?;
     Ok(())
 }
+
+/// Show chunking diagnostics for an indexed workspace.
+pub fn show_stats(workspace_path: Option<&str>, json_output: bool) -> Result<()> {
+    let ws = if let Some(p) = workspace_path {
+        std::path::PathBuf::from(p)
+    } else {
+        std::env::current_dir()?
+    };
+
+    let store_path = ws.join(".rustrag");
+    if !store_path.exists() {
+        println!(
+            "No index found at {}. Run `rust-rag index <path>` first.",
+            store_path.display()
+        );
+        return Ok(());
+    }
+
+    // Load documents from the vector store and reconstruct Chunk objects.
+    let content = std::fs::read_to_string(store_path.join("index.jsonl"))?;
+    let mut chunks: Vec<rust_rag_core::indexer::Chunk> = Vec::new();
+
+    for line in content.lines().filter(|l| !l.trim().is_empty()) {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
+            let file_path: String = value["file_path"].as_str().unwrap_or("").to_string();
+            let module_name: String = value["module_name"].as_str().unwrap_or("").to_string();
+            let text: String = value["text"].as_str().unwrap_or("").to_string();
+
+            let symbol_kind = match value.get("symbol_kind").and_then(|v| v.as_str()) {
+                Some(sk) => match sk.to_lowercase().as_str() {
+                    "function" => rust_rag_core::indexer::SymbolKind::Function,
+                    "implblock" => rust_rag_core::indexer::SymbolKind::ImplBlock,
+                    "unsaferegion" => rust_rag_core::indexer::SymbolKind::UnsafeRegion,
+                    "traitimpl" => rust_rag_core::indexer::SymbolKind::TraitImpl,
+                    "module" => rust_rag_core::indexer::SymbolKind::Module,
+                    "struct" => rust_rag_core::indexer::SymbolKind::Struct,
+                    "enum" => rust_rag_core::indexer::SymbolKind::Enum,
+                    "macro" => rust_rag_core::indexer::SymbolKind::Macro,
+                    _ => continue,
+                },
+                None => continue,
+            };
+
+            chunks.push(rust_rag_core::indexer::Chunk {
+                file_path: std::path::PathBuf::from(file_path),
+                line_start: value["line_start"].as_u64().unwrap_or(0) as usize,
+                line_end: value["line_end"].as_u64().unwrap_or(0) as usize,
+                module_name,
+                symbol_kind,
+                text,
+            });
+        }
+    }
+
+    let diags = rust_rag_core::eval::chunk_diagnostics(&chunks);
+
+    if json_output {
+        // Serialize the diagnostics breakdown to JSON.
+        let mut kinds_json = serde_json::Map::new();
+        for (k, v) in &diags.kinds_breakdown {
+            kinds_json.insert(k.clone(), serde_json::Value::Number((*v as u64).into()));
+        }
+
+        let output = serde_json::json!({
+            "chunk_count": diags.chunk_count,
+            "file_count": diags.file_count,
+            "avg_lines_per_chunk": diags.avg_lines_per_chunk,
+            "median_overlap_between_chunks": diags.median_overlap_between_chunks,
+            "chunks_with_parent_context": diags.chunks_with_parent_context,
+            "kinds_breakdown": kinds_json,
+        });
+
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        println!("Chunking Diagnostics:");
+        println!("  Total chunks: {}", diags.chunk_count);
+        println!("  Indexed files: {}", diags.file_count);
+        println!(
+            "  Average lines per chunk: {:.1}",
+            diags.avg_lines_per_chunk
+        );
+        println!(
+            "  Median overlap between adjacent chunks: {:.0}",
+            diags.median_overlap_between_chunks
+        );
+        println!("  Chunks with parent context (overlap separator): {}", diags.chunks_with_parent_context);
+
+        if !diags.kinds_breakdown.is_empty() {
+            println!("\n  Symbol kind breakdown:");
+            for (kind, count) in &diags.kinds_breakdown {
+                println!("    {}: {}", kind, count);
+            }
+        }
+    }
+
+    Ok(())
+}

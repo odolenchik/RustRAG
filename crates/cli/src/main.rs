@@ -27,6 +27,9 @@ enum Command {
 
     /// Search for a symbol by name in the indexed workspace
     Symbol(SymbolArgs),
+
+    /// Show chunking diagnostics (symbol kind breakdown, overlap stats)
+    Stats(StatsArgs),
 }
 
 #[derive(clap::Args)]
@@ -106,6 +109,17 @@ struct SymbolArgs {
 struct DownloadArgs {
     /// Directory to save the model files (defaults to ~/.cache/huggingface/hub/)
     path: Option<String>,
+}
+
+#[derive(clap::Args)]
+struct StatsArgs {
+    /// Path to the workspace whose index should be analyzed (defaults to current directory)
+    #[arg(short, long)]
+    path: Option<String>,
+
+    /// Output results as JSON
+    #[arg(long, default_value = "false")]
+    json: bool,
 }
 
 /// Resolve a workspace path argument to an absolute, canonicalized path.
@@ -194,6 +208,11 @@ async fn main() -> Result<()> {
             } else {
                 rust_rag_cli::search_symbol(&args.query, workspace.as_deref())
             }
+        }
+        Command::Stats(args) => {
+            let workspace: Option<String> = resolve_workspace_path(args.path.as_deref())?
+                .map(|p| p.to_string_lossy().to_string());
+            rust_rag_cli::show_stats(workspace.as_deref(), args.json)
         }
     }
 }

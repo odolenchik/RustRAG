@@ -2,6 +2,7 @@ pub mod callgraph;
 pub mod config;
 pub mod constants;
 pub mod embedding;
+pub mod eval;
 pub mod indexer;
 pub mod retrieval;
 pub mod state;
