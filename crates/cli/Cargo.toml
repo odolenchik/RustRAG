@@ -26,4 +26,8 @@ rust-rag-tui = { path = "../tui" }
 # Embedding: use online mode (no ort/ONNX needed) — pin to v4 which has compatible ort
 futures-util = "0.3"
 
+tempfile = "3"
+
+[dev-dependencies]
+tokio.workspace = true
 fastembed = { version = "=4.0.0", default-features = false, features = ["online"] }
