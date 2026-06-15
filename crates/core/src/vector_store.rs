@@ -232,7 +232,7 @@ impl VectorStore {
     }
 
     /// Hybrid search combining vector similarity with BM25 text scoring.
-    /// `alpha` in [0,1]: 1.0 = pure vector, 0.0 = pure BM25, ~0.7 = recommended blend.
+    /// `alpha` in `[0, 1]`: 1.0 = pure vector, 0.0 = pure BM25, ~0.7 = recommended blend.
     pub fn hybrid_search(
         &self,
         query_vec: &[f32],

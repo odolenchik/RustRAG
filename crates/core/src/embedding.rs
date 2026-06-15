@@ -253,7 +253,7 @@ impl EmbedCache {
         }
     }
 
-    /// Look up cached embeddings for texts, returning (Vec<Option<Vec<f32>>>).
+    /// Look up cached embeddings for texts, returning `Vec<Option<Vec\<f32>>`>.
     /// Returns None for uncached entries.
     pub fn lookup(&self, texts: &[&str]) -> Result<Vec<Option<Vec<f32>>>, RagCoreError> {
         let cache = self.read_cache()?;

@@ -21,7 +21,7 @@ pub struct Label {
     pub expected_ids: Vec<String>,
 }
 
-/// Evaluation results returned by [`evaluate_mrr`] and [`HitRateResult`].
+/// Evaluation results returned by [`evaluate_mrr`].
 #[derive(Debug, Clone)]
 pub struct EvaluationReport {
     /// Number of labelled queries processed.
