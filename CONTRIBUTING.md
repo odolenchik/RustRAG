@@ -13,10 +13,10 @@ Thank you for your interest in contributing! This document covers everything you
 ```
 RustRag/
 ├── crates/                    # Workspace crates
-│   ├── core/                  # rust-rag-core — Core engine (indexing, embeddings, search)
-│   │   └── tests/mod.rs       # 35+ test functions
+│   ├── core/                  # rust-rag-core — Core engine (indexing, embeddings, search, semantic cache)
+│   │   └── tests/mod.rs       # 59+ test functions
 │   ├── cli/                   # rust-rag-cli — CLI binary (7 subcommands)
-│   ├── server/                # rust-rag-server — HTTP API + MCP protocol
+│   ├── server/                # rust-rag-server — HTTP API (axum) + MCP protocol, rate limiting, auth, semantic cache integration
 │   ├── llm/                   # rust-rag-llm — LLM client abstraction
 │   └── tui/                   # rust-rag-tui — Interactive terminal UI
 ├── Download/                  # ONNX model files (gitignored)
@@ -37,13 +37,16 @@ cargo build --workspace
 ### 2. Run tests
 
 ```bash
-# All core crate tests (35+ tests)
+# All core crate tests (59+ tests: indexing, incremental state, vector store, cosine similarity, hybrid search, semantic cache)
 cargo test --package rust-rag-core
 
-# LLM validation tests
+# LLM validation tests (SSRF endpoint URL validation)
 cargo test --package rust-rag-llm
 
-# All workspace tests
+# Server handler tests (rate limiter, auth, context trimming)
+cargo test --package rust-rag-server
+
+# All workspace tests (108+ total)
 cargo test --workspace
 ```
 

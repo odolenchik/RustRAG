@@ -10,7 +10,7 @@ use axum::{
     Json, Router,
 };
 use futures_util::StreamExt;
-use rust_rag_core::vector_store::VectorStore;
+use rust_rag_core::{semantic_cache::SemanticCache, vector_store::VectorStore};
 use rust_rag_llm::ChatBackend;
 
 use serde::Deserialize;
@@ -97,6 +97,8 @@ pub struct AppState {
     pub api_key: Option<String>,
     /// Maximum context size in bytes sent to the LLM.
     pub max_context_size: usize,
+    /// Semantic cache for LLM answers (empty cache when disabled).
+    pub semantic_cache: Arc<SemanticCache>,
 }
 
 impl Clone for AppState {
@@ -109,6 +111,7 @@ impl Clone for AppState {
             llm_model: self.llm_model.clone(),
             api_key: self.api_key.clone(),
             max_context_size: self.max_context_size,
+            semantic_cache: Arc::clone(&self.semantic_cache),
         }
     }
 }
@@ -168,6 +171,36 @@ impl AppState {
             .unwrap_or(DEFAULT_MAX_CONTEXT_SIZE)
     }
 
+    /// Resolve semantic cache config: enabled + TTL from environment or config file.
+    fn resolve_semantic_cache(rustrag_dir: &Path) -> Arc<SemanticCache> {
+        let config = rust_rag_core::config::Config::find().ok();
+        let env_enabled = std::env::var("RUSRAG_SEMANTIC_CACHE_ENABLED")
+            .ok()
+            .map(|v| v == "1" || v.to_lowercase() == "true")
+            .unwrap_or_else(|| {
+                config
+                    .as_ref()
+                    .and_then(|c| c.semantic_cache_config().enabled.then_some(c.semantic_cache_config().enabled))
+                    .unwrap_or(false)
+            });
+
+        let ttl = std::env::var("RUSRAG_SEMANTIC_CACHE_TTL")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .or_else(|| {
+                config
+                    .as_ref()
+                    .map(|c| c.semantic_cache_config().ttl_secs)
+            });
+
+        if env_enabled {
+            Arc::new(SemanticCache::open(rustrag_dir, ttl))
+        } else {
+            // Return a disabled cache that never matches.
+            Arc::new(SemanticCache::disabled())
+        }
+    }
+
     /// Create app state from a workspace root that has an index.
     pub fn from_workspace(workspace_root: &Path, rate_limit_per_min: u32) -> Result<Self> {
         let store_path = workspace_root.join(".rustrag");
@@ -186,6 +219,7 @@ impl AppState {
             llm_model: Self::resolve_model(),
             api_key: Self::resolve_api_key(),
             max_context_size: Self::resolve_max_context_size(),
+            semantic_cache: Self::resolve_semantic_cache(&store_path),
         })
     }
 
@@ -200,6 +234,7 @@ impl AppState {
             llm_model: Self::resolve_model(),
             api_key: Self::resolve_api_key(),
             max_context_size: Self::resolve_max_context_size(),
+            semantic_cache: Self::resolve_semantic_cache(path),
         })
     }
 
@@ -448,6 +483,19 @@ async fn query_handler(
     let config = rust_rag_core::config::Config::find().unwrap_or_default();
     let top_k = config.llm_config().top_k;
 
+    // Check semantic cache before doing search + LLM call.
+    if let Some(cached) = state.semantic_cache.lookup(&body.question) {
+        return (
+            StatusCode::OK,
+            serde_json::to_string(&serde_json::json!({
+                "answer": cached,
+                "citations": Vec::<serde_json::Value>::new(),
+                "cached": true,
+            }))
+            .unwrap(),
+        );
+    }
+
     let query_embedding = match rust_rag_core::embedding::embed(&body.question) {
         Ok(v) => v,
         Err(e) => {
@@ -508,11 +556,16 @@ async fn query_handler(
     )
     .await;
 
-    let answer_text = match answer {
-        Ok(Ok(Ok(a))) => a,
-        Ok(Ok(Err(e))) => format!("LLM error: {}", e),
-        Ok(Err(_)) | Err(_) => "LLM server busy (request timed out)".to_string(),
+    let (answer_text, was_ok) = match &answer {
+        Ok(Ok(Ok(a))) => (a.clone(), true),
+        Ok(Ok(Err(e))) => (format!("LLM error: {}", e), false),
+        Ok(Err(_)) | Err(_) => ("LLM server busy (request timed out)".to_string(), false),
     };
+
+    // On successful LLM response, write back to semantic cache for future lookups.
+    if was_ok {
+        let _ = state.semantic_cache.write_back(&body.question, &answer_text);
+    }
 
     let citations: Vec<_> = results_vec
         .iter()
@@ -583,6 +636,21 @@ async fn query_stream_handler(
             .unwrap();
     }
 
+    // Check semantic cache before doing search + LLM call.
+    if let Some(cached) = state.semantic_cache.lookup(&params.question) {
+        return axum::response::Response::builder()
+            .status(axum::http::StatusCode::OK)
+            .header("Content-Type", "text/event-stream")
+            .header("Cache-Control", "no-cache")
+            .body(Body::from_stream(async_stream::stream! {
+                let cached_chunks: Vec<_> = cached.as_bytes().chunks(512).collect();
+                for chunk in cached_chunks {
+                    yield Ok::<_, axum::BoxError>(bytes::Bytes::from(chunk.to_vec()));
+                }
+            }))
+            .unwrap_or_else(|_| axum::response::Response::new(Body::from("error")));
+    }
+
     let config = rust_rag_core::config::Config::find().unwrap_or_default();
     let top_k = config.llm_config().top_k;
 
@@ -634,9 +702,14 @@ async fn query_stream_handler(
         // Spawn the LLM streaming task directly as async — no nested runtime needed.
         // Use shared HTTP client from AppState for connection pooling.
         // Wrap in tokio::time::timeout so a hung model still terminates after 5 minutes.
+        // Also collect all text chunks to build a full answer for cache write-back.
         let endpoint = state.0.llm_endpoint.clone();
         let model = state.0.llm_model.clone();
         let http_client = std::sync::Arc::clone(&state.0.http_client);
+        let question_for_cache = params.question.clone();
+        let semantic_cache_clone = Arc::clone(&state.semantic_cache);
+        let full_answer = std::sync::RwLock::new(String::new());
+
         tokio::spawn(async move {
             let client = rust_rag_llm::ollama_client::LlmClient::new_with_http_client(
                 &endpoint,
@@ -651,6 +724,10 @@ async fn query_stream_handler(
                     while let Some(chunk) = stream.next().await {
                         match chunk {
                             Ok(text) => {
+                                // Append to the full answer buffer (single-writer, safe).
+                                if let Ok(mut buf) = full_answer.write() {
+                                    buf.push_str(&text);
+                                }
                                 let sse = format!("data: {}\n\n", text);
                                 let _ = tx_clone
                                     .send(Ok(bytes::Bytes::from(sse.into_bytes())))
@@ -675,6 +752,15 @@ async fn query_stream_handler(
                 let _ = tx_clone
                     .send(Ok(bytes::Bytes::from(err_sse.as_bytes().to_vec())))
                     .await;
+            }
+
+            // After streaming completes, write back to semantic cache.
+            if let Ok(answer) = full_answer.read() {
+                let question = question_for_cache.clone();
+                let answer = answer.clone();
+                tokio::spawn(async move {
+                    let _ = semantic_cache_clone.write_back(&question, &answer);
+                });
             }
         });
     }

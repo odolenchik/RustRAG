@@ -18,7 +18,11 @@ A self-hosted Retrieval-Augmented Generation tool built specifically for analyzi
 - **HTTP API + CORS** — axum server with `/search`, `/query`, `/query/stream`, and `/status` endpoints; SSE streaming support; cross-origin support for browser clients
 - **Incremental indexing** — SHA-256-based file change detection with O(1) comparison (no redundant full-file scans); only re-indexes changed/new/deleted files. Stored in `.rustrag/index_state.json` for persistence across invocations.
 - **Symbol search** — `rust-rag symbol <name>` finds symbols by name across the index, showing kind (Function/ImplBlock/etc.), file path and line number.
-- **Configurable via TOML** — `.rustrag.toml` at workspace root controls embedding model path, LLM endpoint/model, top_k, chunk overlap
+- **Semantic answer cache** — caches LLM answers in `semantic_cache.jsonl`; on repeated or semantically similar questions (cosine similarity ≥ 0.85), returns the cached answer instantly without an LLM call. Configurable TTL (default: 1 hour). Opt-in via config.
+- **Rate limiting** — sliding-window per-client rate limiter prevents API abuse; default budget is configurable requests per minute.
+- **LLM request timeouts** — 2-minute timeout for full responses, 5-minute timeout for streaming sessions with per-chunk read limits to prevent hung connections.
+- **Context size limit** — max assembled context sent to the LLM (default: 12 KB); preserves complete chunk blocks without partial splits.
+- **Configurable via TOML** — `.rustrag.toml` at workspace root controls embedding model path, LLM endpoint/model, top_k, chunk overlap, and semantic cache settings
 
 ## Architecture
 
@@ -26,7 +30,7 @@ Five independent crates in a Cargo workspace:
 
 | Crate | Purpose |
 |-------|---------|
-| `rust-rag-core` | Core engine: indexing (tree-sitter), embedding (fastembed/ONNX), vector store (JSONL + BM25), retrieval, call graph analysis, incremental state management, config |
+| `rust-rag-core` | Core engine: indexing (tree-sitter), embedding (fastembed/ONNX), vector store (JSONL + BM25), semantic LLM answer cache, retrieval, call graph analysis, incremental state management, config |
 | `rust-rag-cli` | CLI binary (`rust-rag`) with subcommands for index/ask/chat/reindex/info/clean/symbol |
 | `rust-rag-server` | HTTP API server (axum) and MCP stdio server; exposes search, query, and status endpoints |
 | `rust-rag-llm` | LLM client abstraction supporting OpenAI-compatible / Ollama backends with SSE streaming support |
@@ -132,17 +136,25 @@ RUSRAG_WORKSPACE=/workspace/path ./target/release/rust-rag-serve mcp
 }
 ```
 
-**POST `/query`** — Full RAG with LLM answer and citations
+**POST `/query`** — Full RAG with LLM answer and citations (also checks semantic cache)
 ```json
 // Request
 {"question": "How does the embedding cache work?"}
 
-// Response
+// Response (cache miss — LLM was called)
 {
   "answer": "The EmbedCache stores...",
   "citations": [
     { "file_path": "...", "line_start": 30, "line_end": 45, "text": "..." }
-  ]
+  ],
+  "cached": false
+}
+
+// Response (cache hit — semantic or exact match)
+{
+  "answer": "The EmbedCache stores...",
+  "citations": [],
+  "cached": true
 }
 ```
 
@@ -206,6 +218,9 @@ top_k = 5
 | `LLAMA_ENDPOINT` | LLM HTTP endpoint | from config or default |
 | `LLAMA_MODEL` | LLM model name | from config or default |
 | `RUSRAG_WORKSPACE` | Server workspace root | current directory |
+| `RUSRAG_SEMANTIC_CACHE_ENABLED` | Enable/disable semantic answer cache | `false` (opt-in) |
+| `RUSRAG_SEMANTIC_CACHE_TTL` | Semantic cache TTL in seconds | `3600` (1 hour) |
+| `RUSRAG_MAX_CONTEXT_SIZE` | Max assembled context bytes sent to LLM | `12000` (12 KB) |
 
 ## TUI Keyboard Shortcuts
 
@@ -226,9 +241,12 @@ top_k = 5
 
 ```bash
 cargo test --package rust-rag-core
-# Runs 35 tests covering: indexing, incremental state management, vector store roundtrip,
+# Runs 59 tests covering: indexing, incremental state management, vector store roundtrip,
 # cosine similarity, hybrid search alpha blending, BM25 scoring, filters (symbol kind + file extension),
-# document removal, edge cases
+# document removal, semantic answer cache (exact + similarity lookup, TTL expiry, persistence)
+
+cargo test --workspace
+# Runs 108 tests across all workspace crates
 ```
 
 ## How It Works
@@ -239,7 +257,8 @@ cargo test --package rust-rag-core
 4. **Embedding** — each chunk text is embedded via fastembed's ONNX runtime; results are cached in JSONL with model_id versioning for automatic invalidation on model change. Batch embedding processes all chunks in a single ONNX inference call instead of N individual calls.
 5. **Vector store** — embeddings + metadata stored as JSONL with an in-memory BM25 inverted index built lazily at query time; documents are cached with mtime-based invalidation to avoid re-parsing on every search.
 6. **Retrieval** — hybrid search combines cosine similarity (vector) and BM25 text scoring via alpha-weighted blend; each document's vector similarity is computed once and reused for both ranking and result display. Filters by symbol kind or file extension applied post-ranking.
-7. **LLM answer** — retrieved context is assembled with citations and sent to the configured LLM endpoint; supports both full-response and SSE streaming modes.
+7. **Semantic cache lookup** — before calling the LLM, the system embeds the question and checks `semantic_cache.jsonl` for exact or semantically similar (cosine similarity ≥ 0.85) cached answers. Cache entries expire after a configurable TTL (default: 1 hour).
+8. **LLM answer** — if no cache hit, retrieved context is assembled with citations and sent to the configured LLM endpoint; supports both full-response and SSE streaming modes. Responses are written back to the semantic cache for future lookups.
 
 ## License
 

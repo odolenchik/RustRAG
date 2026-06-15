@@ -7,7 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_Note: v0.7.8 through current are documented below._
+_Note: v0.7.8 through 0.7.14 are documented below._
+
+## [0.7.15] - 2026-06-15
+
+### Added
+- **Semantic LLM answer cache** — caches answers in `semantic_cache.jsonl`; on repeated or semantically similar questions (cosine similarity ≥ 0.85), returns the cached answer instantly without an LLM call. TTL-based expiry with configurable duration. Opt-in via config or env vars (`RUSRAG_SEMANTIC_CACHE_ENABLED`, `RUSRAG_SEMANTIC_CACHE_TTL`). New module: `crates/core/src/semantic_cache.rs`.
+- **Sliding-window rate limiter** — per-client IP rate limiting on HTTP API endpoints (excluding `/status`), replacing the broken Semaphore that never replenished. Implemented as a custom ~50-line struct with no external dependencies.
+- **LLM request timeouts** — 2-minute timeout for full responses and 5-minute timeout for streaming sessions, preventing hung LLM calls from consuming resources indefinitely. Per-chunk read timeout (60s) on the shared HTTP client.
+- **Context size limit** — maximum assembled context sent to the LLM (default: 12 KB); preserves complete chunk blocks without partial splits. Configurable via `RUSRAG_MAX_CONTEXT_SIZE` env var or `[llm].max_context_size` in config file.
+- **Bearer token authentication** for HTTP API endpoints (all except `/status`) via `RUSRAG_API_KEY` environment variable.
+- New tests: 10 new server handler tests (rate limiter, auth, context trimming), 7 new semantic cache tests (exact match, similarity lookup, TTL expiry, persistence, disabled mode).
+
+### Changed
+- `/query` and `/query/stream` endpoints now check the semantic cache before performing search + LLM call. On a successful response, the answer is written back to the cache for future lookups.
+- Config module (`crates/core/src/config.rs`) adds `SemanticCacheConfig` with `enabled: bool` and `ttl_secs: u64` fields under `[semantic_cache]` TOML section.
+- `AppState` now includes a shared `Arc<SemanticCache>` instance, created from config/env or disabled by default.
+
+### Fixed
+- Rate limiter no longer blocks all requests after the first — the previous Semaphore-based approach never replenished permits, effectively disabling any request beyond budget limit
 
 ## [0.7.14] - 2026-06-11
 

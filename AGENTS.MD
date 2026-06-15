@@ -15,7 +15,7 @@ Five independent crates in a Cargo workspace (see `Cargo.toml`):
 
 | Crate | Purpose | Public API | Entry point |
 |-------|---------|------------|-------------|
-| `crates/core` | Core engine: indexing (tree-sitter), embedding (fastembed/ONNX), vector store (JSONL + BM25), retrieval, call graph analysis, config, state management | `rust_rag_core::*` | lib.rs |
+| `crates/core` | Core engine: indexing (tree-sitter), embedding (fastembed/ONNX), vector store (JSONL + BM25), semantic LLM answer cache, retrieval, call graph analysis, config, state management | `rust_rag_core::*` | lib.rs |
 | `crates/cli` | CLI binary (`rust-rag`) with subcommands via clap — index/reindex/info/clean/ask/chat/symbol/stats/download | `rust_rag_cli::` | main.rs (binary) |
 | `crates/server` | HTTP API server (axum) and MCP stdio server; exposes search, query, status endpoints + MCP protocol tools | `rust_rag_server::*` | lib.rs → build_router / mcp module |
 | `crates/llm` | LLM client abstraction supporting OpenAI-compatible / Ollama backends with SSE streaming support | `rust_rag_llm::*` | ollama_client.rs, validation.rs |
@@ -25,12 +25,13 @@ Five independent crates in a Cargo workspace (see `Cargo.toml`):
 
 ## Key Files and Artifacts
 
-- `.rustrag.toml` — TOML config (embedding model path, LLM endpoint/model, top_k, chunk_overlap). Env vars (`RUSRAG_MODEL_PATH`, `LLAMA_ENDPOINT`, `LLAMA_MODEL`) override config.
+- `.rustrag.toml` — TOML config (embedding model path, LLM endpoint/model, top_k, chunk_overlap, semantic cache settings). Env vars (`RUSRAG_MODEL_PATH`, `LLAMA_ENDPOINT`, `LLAMA_MODEL`, `RUSRAG_SEMANTIC_CACHE_ENABLED`, `RUSRAG_SEMANTIC_CACHE_TTL`) override config.
 - `.rustrag/` — index directory: vector store JSONL, BM25 inverted index, incremental state (`index_state.json`). Created by `rust-rag index`.
 - `crates/core/src/indexer.rs` — AST extraction via tree-sitter-rust, semantic chunking with overlap.
 - `crates/core/src/vector_store.rs` — hybrid search (BM25 + cosine similarity), document CRUD, filtering.
 - `crates/core/src/embedding.rs` — ONNX embedding via fastembed, JSONL caching with model_id versioning.
-- `crates/server/src/lib.rs` — HTTP handlers (`/status`, `/search`, `/query`, `/query/stream`), AppState, auth, rate limiting.
+- `crates/core/src/semantic_cache.rs` — Semantic LLM answer cache: exact + cosine-similarity lookup, TTL expiry, JSONL persistence (`semantic_cache.jsonl`).
+- `crates/server/src/lib.rs` — HTTP handlers (`/status`, `/search`, `/query`, `/query/stream`), AppState, auth, rate limiting, semantic cache integration.
 - `crates/server/src/mcp.rs` — MCP stdio protocol implementation (JSON-RPC 2.0, tools/list, tools/call).
 - `crates/tui/src/app.rs` — ratatui app state, query input, result navigation.
 - `crates/tui/src/ui/transcript.rs` — transcript/answer rendering in TUI.

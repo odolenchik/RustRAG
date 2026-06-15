@@ -8,6 +8,9 @@ pub struct Config {
     pub embedding: EmbeddingConfig,
     #[serde(default)]
     pub llm: LlmConfig,
+    /// Semantic cache configuration for caching LLM answers.
+    #[serde(default)]
+    pub semantic_cache: SemanticCacheConfig,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -30,6 +33,29 @@ pub struct LlmConfig {
     /// Maximum size in bytes of the assembled context sent to the LLM.
     /// Set to 0 or omit for the default (12 KB).
     pub max_context_size: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SemanticCacheConfig {
+    /// Enable semantic caching of LLM answers (default: false).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Time-to-live in seconds for cached entries (default: 3600 = 1 hour).
+    #[serde(default = "default_cache_ttl")]
+    pub ttl_secs: u64,
+}
+
+impl Default for SemanticCacheConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            ttl_secs: default_cache_ttl(),
+        }
+    }
+}
+
+fn default_cache_ttl() -> u64 {
+    3600
 }
 
 fn default_top_k() -> usize {
@@ -80,5 +106,9 @@ impl Config {
 
     pub fn llm_config(&self) -> &LlmConfig {
         &self.llm
+    }
+
+    pub fn semantic_cache_config(&self) -> &SemanticCacheConfig {
+        &self.semantic_cache
     }
 }
