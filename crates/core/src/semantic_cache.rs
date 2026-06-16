@@ -1,3 +1,6 @@
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 use crate::error::RagCoreError;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -234,7 +237,18 @@ fn persist_jsonl(
     // Atomic write: temp file + rename (POSIX atomic).
     let tmp_path = path.with_extension("jsonl.tmp");
     std::fs::write(&tmp_path, &content)?;
-    std::fs::rename(tmp_path, path)?;
+    #[cfg(unix)]
+    if let Err(e) = std::fs::set_permissions(
+        path,
+        PermissionsExt::from_mode(0o600),
+    ) {
+        tracing::warn!(
+            "[warning] Failed to set file permissions on {}: {}",
+            path.display(),
+            e
+        );
+    }
+    let _ = std::fs::rename(tmp_path, path);
     Ok(())
 }
 

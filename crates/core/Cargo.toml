@@ -5,24 +5,31 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-anyhow = "1.0"
-thiserror = "2.0"
+anyhow = { workspace = true }
+thiserror = { workspace = true }
 tracing.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["sync", "macros"] }
 toml = "0.8"
-glob = "0.3"
-walkdir = "2"
-tree-sitter = "0.25"
-tree-sitter-rust = "0.24"
-petgraph = "0.6"
-ra_ap_syntax = "=0.0.178"
-reqwest = { version = "0.12", features = ["blocking", "stream", "rustls-tls"] }
-fastembed = { version = "=4.0.0", default-features = false, features = ["ort-download-binaries"] }
-dirs = "5"
-sha2 = "0.10"
+
+# Sub-crates (re-exports)
+rust-rag-indexer = { path = "../indexer" }
+rust-rag-vector-store = { path = "../vector-store" }
+rust-rag-embedding = { path = "../embedding" }
+rust-rag-state = { path = "../state" }
+rust-rag-callgraph = { path = "../callgraph" }
+rust-rag-config = { path = "../config" }
+rust-rag-error = { path = "../error" }
+
+# Tracing (kept in core)
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Semantic cache deps (inline in core)
+sha2 = "0.10"
+
+# Hybrid retrieval dep
+petgraph = "0.6"
 
 [dev-dependencies]
 tempfile = "3"

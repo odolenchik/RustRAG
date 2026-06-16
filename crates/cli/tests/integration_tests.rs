@@ -14,7 +14,6 @@
 //! ```
 
 use rust_rag_cli as rust_rag;
-use std::io::Write as _;
 use std::path::Path;
 
 /// Check whether we should attempt embedding-dependent operations.
@@ -472,6 +471,11 @@ fn test_search_symbol_json_output() {
 
 #[test]
 fn test_download_model_target() {
+    if !use_embedding() {
+        // Skip network-dependent download when embedding tests are disabled.
+        return;
+    }
+
     let dir = tempfile::tempdir().unwrap();
     let target_path = dir.path().to_str().unwrap();
 

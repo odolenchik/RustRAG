@@ -61,7 +61,7 @@ pub fn retrieve_from_chunks(
                 line_start: chunk.line_start,
                 line_end: chunk.line_end,
                 module_name: chunk.module_name.clone(),
-                symbol_kind: (&chunk.symbol_kind).into(),
+                symbol_kind: Some(chunk.symbol_kind.clone()),
                 text: chunk.text.clone(),
                 score,
             }

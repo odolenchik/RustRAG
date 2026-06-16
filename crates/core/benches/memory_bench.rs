@@ -107,7 +107,7 @@ fn memory_benchmark(c: &mut Criterion) {
     let file_counts = [10, 30];
 
     for &count in &file_counts {
-        let mut group = c.benchmark_group(&format!("memory_usage_{}_files", count));
+        let mut group = c.benchmark_group(format!("memory_usage_{}_files", count));
         group.sample_size(10);
        group.warm_up_time(Duration::from_millis(50));
         group.measurement_time(Duration::from_millis(500));

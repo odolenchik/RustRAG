@@ -1,11 +1,22 @@
-use crate::error::RagCoreError;
+//! TOML configuration loading for rust-rag.
+
+#![warn(missing_docs)]
+
 use serde::Deserialize;
 use std::path::Path;
 
+pub use rust_rag_error::RagCoreError;
+
+/// Default TTL for semantic cache entries (1 hour in seconds).
+pub const DEFAULT_TTL_SECS: u64 = 3600;
+
+/// Top-level configuration loaded from `.rustrag.toml`.
 #[derive(Debug, Deserialize, Default)]
 pub struct Config {
+    /// Embedding model and chunking settings.
     #[serde(default)]
     pub embedding: EmbeddingConfig,
+    /// LLM endpoint and model name settings.
     #[serde(default)]
     pub llm: LlmConfig,
     /// Semantic cache configuration for caching LLM answers.
@@ -13,28 +24,32 @@ pub struct Config {
     pub semantic_cache: SemanticCacheConfig,
 }
 
+/// Configuration for the embedding model pipeline.
 #[derive(Debug, Deserialize, Default)]
 pub struct EmbeddingConfig {
+    /// Path to the ONNX model directory (overrides env/config lookup).
     pub model_path: Option<String>,
 
     /// Number of adjacent lines to include before and after each AST-extracted chunk.
-    /// Helps preserve context at chunk boundaries where a function call or macro invocation
-    /// might be split between chunks. Set to 0 for no overlap (exact AST node boundaries).
     #[serde(default)]
     pub chunk_overlap: usize,
 }
 
+/// Configuration for LLM endpoint access.
 #[derive(Debug, Deserialize, Default)]
 pub struct LlmConfig {
+    /// Base URL of the LLM API endpoint (e.g. OpenAI-compatible server).
     pub endpoint: Option<String>,
+    /// Model name to use when querying the LLM endpoint.
     pub model: Option<String>,
+    /// Maximum number of results to return from the LLM context.
     #[serde(default = "default_top_k")]
     pub top_k: usize,
     /// Maximum size in bytes of the assembled context sent to the LLM.
-    /// Set to 0 or omit for the default (12 KB).
     pub max_context_size: Option<usize>,
 }
 
+/// Configuration for semantic caching of LLM answers.
 #[derive(Debug, Deserialize)]
 pub struct SemanticCacheConfig {
     /// Enable semantic caching of LLM answers (default: false).
@@ -64,8 +79,6 @@ fn default_top_k() -> usize {
 
 impl Config {
     /// Load config from `.rustrag.toml` in the given directory (workspace root).
-    /// Returns a default (empty) config when no file is found so that callers
-    /// can continue without it.
     pub fn load(workspace_root: &Path) -> Result<Self, RagCoreError> {
         let config_path = workspace_root.join(".rustrag.toml");
         if !config_path.exists() {
@@ -100,14 +113,17 @@ impl Config {
         Ok(Self::default())
     }
 
+    /// Return a reference to the embedding configuration.
     pub fn embedding_config(&self) -> &EmbeddingConfig {
         &self.embedding
     }
 
+    /// Return a reference to the LLM configuration.
     pub fn llm_config(&self) -> &LlmConfig {
         &self.llm
     }
 
+    /// Return a reference to the semantic cache configuration.
     pub fn semantic_cache_config(&self) -> &SemanticCacheConfig {
         &self.semantic_cache
     }

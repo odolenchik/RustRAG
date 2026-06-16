@@ -418,7 +418,7 @@ async fn dispatch_request(
         let result = handle_tools_call(params, &store_path).await;
         return match result {
             Ok(v) => Some(ok_response(id, v)),
-            Err(e) => Some(err_response(id, -32603, &format!("Internal error: {}", e))),
+            Err(e) => Some(err_response(id, -32603, &format!("Internal error: {}", e.to_string().chars().take(256).collect::<String>()))),
         };
     }
 
@@ -451,6 +451,6 @@ async fn dispatch_request(
 
     match result {
         Ok(v) => Some(ok_response(id, v)),
-        Err(e) => Some(err_response(id, -32603, &format!("Internal error: {}", e))),
+        Err(e) => Some(err_response(id, -32603, &format!("Internal error: {}", e.to_string().chars().take(256).collect::<String>()))),
     }
 }

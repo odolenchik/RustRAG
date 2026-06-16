@@ -114,9 +114,11 @@ pub struct LlmClient {
 impl LlmClient {
     /// Build a shared `reqwest::Client` with connection pooling and timeouts.
     pub fn shared_http_client() -> std::sync::Arc<reqwest::Client> {
+        // Limit redirects to prevent redirect-based SSRF attacks (max 5 hops).
         std::sync::Arc::new(
             reqwest::Client::builder()
                 .pool_max_idle_per_host(10)
+                .redirect(reqwest::redirect::Policy::limited(5))
                 .build()
                 .expect("Failed to create HTTP client"),
         )

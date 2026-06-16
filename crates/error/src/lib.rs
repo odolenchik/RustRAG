@@ -1,12 +1,14 @@
-//! Typed errors for the rust-rag-core library.
+//! Typed errors for rust-rag.
 //!
 //! Library-level public APIs return `Result<T, RagCoreError>`. Callers can match on
 //! variants to make decisions (e.g. retry on I/O, skip missing config). Binary crates
 //! typically wrap these with `.map_err(anyhow::Error::from)` and add context for the user.
 
+#![warn(missing_docs)]
+
 use std::path::PathBuf;
 
-/// All error types produced by the rust-rag-core library.
+/// All error types produced by the rust-rag library ecosystem.
 #[derive(Debug, thiserror::Error)]
 pub enum RagCoreError {
     /// The requested workspace does not contain a Cargo.toml at the given path.
@@ -47,7 +49,12 @@ pub enum RagCoreError {
 
     /// The embedding model could not be found and download also failed.
     #[error("embedding model not found; attempted download from {url}: {cause}")]
-    ModelNotFound { url: String, cause: Box<dyn std::error::Error + Send + Sync> },
+    ModelNotFound {
+        /// URL where the model was fetched from.
+        url: String,
+        /// Cause of the download failure.
+        cause: Box<dyn std::error::Error + Send + Sync>,
+    },
 
     /// A generic I/O error wrapping a `std::io::Error`.
     #[error("{0}")]
@@ -65,7 +72,7 @@ impl RagCoreError {
         if op.is_empty() {
             RagCoreError::Io(err)
         } else {
-            RagCoreError::Io(std::io::ErrorKind::Other.into()) // simplified; see below
+            RagCoreError::Io(std::io::ErrorKind::Other.into())
         }
     }
 
@@ -89,13 +96,21 @@ impl RagCoreError {
 /// High-level error categories useful for user-facing messages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorKind {
+    /// No Cargo.toml was found in the workspace root.
     MissingCargoToml,
+    /// TOML configuration file parse / read failure.
     Config,
+    /// General I/O error wrapping a `std::io::Error`.
     Io,
+    /// Embedding model read or initialisation failure.
     Embedding,
+    /// Persistent vector-store operation failed.
     VectorStore,
+    /// The index contains an unexpected SymbolKind value.
     CorruptIndex,
+    /// An internal / unexpected error.
     Internal,
+    /// The embedding model could not be found and download also failed.
     ModelNotFound,
 }
 
@@ -115,17 +130,13 @@ impl std::fmt::Display for ErrorKind {
 }
 
 /// Helper to convert a `Result<T, RagCoreError>` into `anyhow::Result<T>`.
-/// Uses this module's Display impl for formatting — callers can also use `.map_err(anyhow::anyhow!("[RagCore] {}", e))` directly.
 pub fn wrap_core_result<T>(result: Result<T, RagCoreError>) -> anyhow::Result<T> {
     result.map_err(|e| anyhow::anyhow!("[RagCore] {}", e))
 }
 
-// ---------------------------------------------------------------------------
-// Helper extensions for modules that need to wrap errors into RagCoreError
-// ---------------------------------------------------------------------------
-
 /// Convenience extension: wrap a `std::io::Error` as the variant-specific error.
 pub trait IoContext<T> {
+    /// Wrap this `Result` by mapping its `io::Error` through the provided closure.
     fn wrapped(self, kind: impl FnOnce(std::io::Error) -> Box<dyn std::error::Error + Send + Sync>) -> Result<T, RagCoreError>;
 }
 
@@ -137,7 +148,6 @@ impl<T> IoContext<T> for Result<T, std::io::Error> {
 
 impl From<Box<dyn std::error::Error + Send + Sync>> for RagCoreError {
     fn from(err: Box<dyn std::error::Error + Send + Sync>) -> Self {
-        // Dispatch based on the inner type name (heuristic; covers common cases).
         let err_any = err.as_ref();
         let name = std::any::type_name_of_val(err_any);
         if name.contains("ParseIntError") || name.contains("toml::de") {
@@ -150,28 +160,24 @@ impl From<Box<dyn std::error::Error + Send + Sync>> for RagCoreError {
     }
 }
 
-/// Allow `std::io::Error` to be converted into a generic I/O error variant.
 impl From<std::io::Error> for RagCoreError {
     fn from(err: std::io::Error) -> Self {
         RagCoreError::Io(err)
     }
 }
 
-/// Allow `std::time::SystemTimeError` to be converted into an I/O error variant.
 impl From<std::time::SystemTimeError> for RagCoreError {
     fn from(err: std::time::SystemTimeError) -> Self {
         RagCoreError::Io(std::io::Error::new(std::io::ErrorKind::Other, err))
     }
 }
 
-/// Allow `std::fmt::Error` to be converted into an I/O error variant.
 impl From<std::fmt::Error> for RagCoreError {
     fn from(err: std::fmt::Error) -> Self {
         RagCoreError::Io(std::io::Error::new(std::io::ErrorKind::Other, err))
     }
 }
 
-/// Allow `reqwest::Error` to be converted into an Embedding error.
 impl From<reqwest::Error> for RagCoreError {
     fn from(err: reqwest::Error) -> Self {
         RagCoreError::Embedding(
@@ -181,7 +187,6 @@ impl From<reqwest::Error> for RagCoreError {
     }
 }
 
-/// Allow `serde_json::Error` to be converted into a VectorStore error.
 impl From<serde_json::Error> for RagCoreError {
     fn from(err: serde_json::Error) -> Self {
         RagCoreError::VectorStore(

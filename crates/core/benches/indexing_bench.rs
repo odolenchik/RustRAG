@@ -84,7 +84,7 @@ fn indexing_benchmark(c: &mut Criterion) {
     let sizes = [5, 20]; // ~5 and ~20 files per member crate (3 crates total)
 
     for &size in &sizes {
-        let mut group = c.benchmark_group(&format!("index_workspace_{}_files", size * 3));
+        let mut group = c.benchmark_group(format!("index_workspace_{}_files", size * 3));
         group.sample_size(10);
        group.warm_up_time(Duration::from_millis(50));
         group.measurement_time(Duration::from_millis(500));

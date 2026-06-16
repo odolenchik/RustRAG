@@ -2,6 +2,8 @@
 /// Blocks private IP ranges, loopback addresses, localhost hostnames, cloud metadata IPs,
 /// and non-http(s) schemes. Performs DNS rebinding protection by resolving hostname
 /// and checking the resolved IP address.
+///
+/// When `RUSRAG_SSRF_STRICT=1` is set, private/loopback IPs are **rejected** instead of merely warned.
 pub fn validate_endpoint(url: &str) -> anyhow::Result<()> {
     let parsed = url.parse::<url::Url>()?;
 
@@ -34,7 +36,15 @@ pub fn validate_endpoint(url: &str) -> anyhow::Result<()> {
                      This should only be used for local development.",
                     host,
                 );
-                return Ok(()); // already warned, allow for local dev
+                // In strict mode (RUSRAG_SSRF_STRICT=1), reject private IPs entirely.
+                let strict_mode = std::env::var("RUSRAG_SSRF_STRICT").is_ok_and(|v| !v.is_empty());
+                if strict_mode {
+                    anyhow::bail!(
+                        "LLM endpoint hostname '{}' resolves to a local or private address ({ip})",
+                        host,
+                    );
+                }
+                return Ok(()); // already warned, allow for local dev (non-strict mode)
             }
         }
     }

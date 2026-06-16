@@ -1,15 +1,35 @@
-use crate::error::RagCoreError;
+//! Persistent JSONL-based vector store with BM25 text scoring and cosine similarity.
+//!
+//! Documents are stored as line-delimited JSON in an `index.jsonl` file. The crate provides
+//! hybrid search combining precomputed embedding similarity (cosine) with on-the-fly BM25
+//! text scoring over the indexed document corpus.
+
+#![warn(missing_docs)]
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
+use rust_rag_indexer::Chunk;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::RwLock;
 
+pub use rust_rag_error::RagCoreError;
+
+// ---------------------------------------------------------------------------
+// Document storage types
+// ---------------------------------------------------------------------------
+
 /// A document in the vector store with its embedding and metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Document {
+    /// Unique identifier for this document.
     pub id: String,
-    pub chunk: crate::indexer::Chunk,
+    /// The source code chunk this document represents.
+    pub chunk: Chunk,
+    /// Embedding vector (must match the dimensionality of the embedding model).
     pub embedding: Vec<f32>,
 }
 
@@ -29,22 +49,17 @@ impl std::fmt::Debug for DocCacheEntry {
 
 /// Cached BM25 inverted index entry — invalidated when the index file changes.
 struct Bm25CacheEntry {
-    /// File mtime at cache creation time (for invalidation).
     file_mtime: u64,
-    /// Number of documents in the index (for quick mismatch detection).
     doc_count: usize,
-    /// Cached BM25 inverted index.
     inverted_index: InvertedIndex,
-    /// Per-document statistics needed for BM25 normalization.
     doc_stats: HashMap<String, DocStat>,
 }
 
 /// Persistent JSONL-based vector store for RustRAG indexing.
 pub struct VectorStore {
+    /// Path to the directory containing index.jsonl and related files.
     pub path: PathBuf,
-    /// Cache for lazy-loaded documents to avoid re-reading index.jsonl on every search.
     cache: RwLock<Option<DocCacheEntry>>,
-    /// BM25 inverted index cache — avoids rebuilding the inverted index on every query.
     bm25_cache: RwLock<Option<Bm25CacheEntry>>,
 }
 
@@ -53,7 +68,6 @@ impl VectorStore {
     pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self, RagCoreError> {
         let path = path.as_ref();
         std::fs::create_dir_all(path)?;
-        // Restrict directory permissions on Unix systems (owner-only access).
         #[cfg(unix)]
         Self::set_restricted_permissions(path);
         Ok(VectorStore {
@@ -76,11 +90,26 @@ impl VectorStore {
         }
     }
 
-    /// No-op on non-Unix platforms (Windows uses ACLs, not POSIX permissions).
+    /// No-op on non-Unix platforms.
     #[cfg(not(unix))]
     fn set_restricted_permissions(_path: &std::path::Path) {}
 
-    /// Get the default .rustrag path inside a workspace.
+    /// Set restrictive permissions (0600) on a file — used for index/cache JSONL files.
+    fn restrict_file_permissions(path: &std::path::Path) {
+        #[cfg(unix)]
+        if let Err(e) = std::fs::set_permissions(
+            path,
+            PermissionsExt::from_mode(0o600),
+        ) {
+            tracing::warn!(
+                "[warning] Failed to set file permissions on {}: {}",
+                path.display(),
+                e
+            );
+        }
+    }
+
+    /// Get the default `.rustrag` path inside a workspace.
     pub fn for_workspace(workspace_root: impl AsRef<std::path::Path>) -> Self {
         let dir = workspace_root.as_ref().join(".rustrag");
         VectorStore::open(&dir).unwrap_or_else(|e| panic!("Failed to create vector store directory '{}': {}", dir.display(), e))
@@ -95,6 +124,7 @@ impl VectorStore {
         let index_path = self.path.join("index.jsonl");
         if !index_path.exists() {
             std::fs::write(&index_path, "")?;
+            Self::restrict_file_permissions(&index_path);
         }
 
         let file = std::fs::OpenOptions::new()
@@ -126,28 +156,26 @@ impl VectorStore {
         if ids.is_empty() {
             return Ok(());
         }
-        let id_set: std::collections::HashSet<&str> = ids.iter().map(|s| s.as_str()).collect();
+        let id_set: HashSet<&str> = ids.iter().map(|s| s.as_str()).collect();
 
         let index_path = self.path.join("index.jsonl");
         if !index_path.exists() {
             return Ok(());
         }
 
-        // Read all lines, filter out matching IDs
         let content = std::fs::read_to_string(&index_path)?;
         let mut kept_lines: Vec<String> = Vec::new();
         for line in content.lines().filter(|l| !l.trim().is_empty()) {
             if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
                 if let Some(doc_id) = value["id"].as_str() {
                     if id_set.contains(doc_id) {
-                        continue; // remove this document
+                        continue;
                     }
                 }
             }
             kept_lines.push(line.to_string());
         }
 
-        // Atomic replace: write to temp, then rename
         let tmp_path = self.path.join("index.jsonl.tmp");
         std::fs::write(&tmp_path, kept_lines.join("\n"))?;
         std::fs::rename(&tmp_path, &index_path)?;
@@ -171,7 +199,6 @@ impl VectorStore {
             return Ok(Vec::new());
         }
 
-        // Get current file mtime for cache invalidation
         let current_mtime = std::fs::metadata(&index_path)
             .ok()
             .and_then(|m| m.modified().ok())
@@ -181,14 +208,12 @@ impl VectorStore {
         {
             let cache = self.cache.read().unwrap();
             if let Some(entry) = &*cache {
-                // Check mtime — if file hasn't changed, return cached docs
                 if current_mtime == Some(entry.mtime) {
                     return Ok(entry.documents.clone());
                 }
             }
         }
 
-        // Cache miss or stale — read and parse the file
         let content = std::fs::read_to_string(&index_path)?;
         let documents: Vec<serde_json::Value> = content
             .lines()
@@ -201,7 +226,6 @@ impl VectorStore {
             }))
             .collect::<Result<Vec<_>, _>>()?;
 
-        // Update cache and return a clone for the caller
         if let Some(mtime) = current_mtime {
             let mut cache = self.cache.write().unwrap();
             *cache = Some(DocCacheEntry {
@@ -214,7 +238,6 @@ impl VectorStore {
     }
 
     /// Invalidate both the document cache and BM25 inverted index cache.
-    /// Called after index updates (insert/remove documents).
     pub fn invalidate_cache(&self) {
         let mut doc_cache = self.cache.write().unwrap();
         *doc_cache = None;
@@ -232,7 +255,6 @@ impl VectorStore {
     }
 
     /// Hybrid search combining vector similarity with BM25 text scoring.
-    /// `alpha` in `[0, 1]`: 1.0 = pure vector, 0.0 = pure BM25, ~0.7 = recommended blend.
     pub fn hybrid_search(
         &self,
         query_vec: &[f32],
@@ -267,30 +289,22 @@ impl VectorStore {
             return Ok(Vec::new());
         }
 
-        // Get cached or build BM25 inverted index (avoids rebuilding on every query)
-        let (inverted, doc_stats): (InvertedIndex, HashMap<String, DocStat>) =
-            self.get_bm25_cache(&documents)?;
+        let (inverted, doc_stats) = self.get_bm25_cache(&documents)?;
 
-        // Tokenize query text for BM25
         let query_tokens = tokenize(query_text);
 
-        // Compute average document length for BM25 normalization
         let total_docs = documents.len();
         let avgdl: f64 =
             doc_stats.values().map(|s| s.doc_len).sum::<f64>() / total_docs.max(1) as f64;
 
-        // Precompute query vector magnitude once (avoids redundant work per-document).
         let query_mag = cosine_similarity(query_vec, query_vec).abs().max(1e-10);
 
-        // Score each document with both vector similarity and BM25.
-        // Stores (combined_score, vec_similarity_f32, original_index) so we don't recompute cosine sim.
-        type DocScore = (f64, f32, usize); // (combined_score, vector_sim_for_result, original_index)
+        type DocScore = (f64, f32, usize);
         let mut scored: Vec<DocScore> = Vec::new();
 
         for (idx, doc) in documents.iter().enumerate() {
             let doc_id = doc["id"].as_str().unwrap_or("").to_string();
 
-            // --- Vector similarity score (computed once per document) ---
             let vec_score_val: f32 = if let Some(embedding) = doc.get("embedding") {
                 if let Some(embed_arr) = embedding.as_array() {
                     let embed_f32: Vec<f32> = embed_arr
@@ -306,13 +320,11 @@ impl VectorStore {
                 0.0
             };
 
-            // --- BM25 score ---
             let bm25_val: f64 = if !pure_vector && !query_tokens.is_empty() && !inverted.is_empty()
             {
                 let mut doc_bm25: f64 = 0.0;
                 for token in &query_tokens {
                     if let Some(postings) = inverted.get(token.as_str()) {
-                        // Find this document's term frequency in postings
                         let posting = postings.iter().find(|p| p.doc_id == doc_id);
                         if let Some(p) = posting {
                             let df = postings.len() as u64;
@@ -331,22 +343,18 @@ impl VectorStore {
                 0.0
             };
 
-            // Normalize BM25 to [0,1] range — guard against all-empty-documents edge case.
             let bm25_normalized = if total_docs > 0 && avgdl > 0.0 {
                 (bm25_val / avgdl).max(0.0)
             } else {
                 0.0
             };
 
-            // --- Combine scores ---
             let combined = alpha * vec_score_val as f64 + (1.0 - alpha) * bm25_normalized;
             scored.push((combined, vec_score_val, idx));
         }
 
-        // Sort by combined score descending
         scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
-        // Apply filters and build SearchResult objects (reuse precomputed similarity)
         let mut results: Vec<SearchResult> = Vec::new();
         for (_, vec_sim, idx) in scored {
             if results.len() >= top_k {
@@ -355,7 +363,6 @@ impl VectorStore {
 
             let doc = &documents[idx];
 
-            // Apply metadata filters before including result
             if let Some(flt) = filters {
                 if !flt.matches(doc) {
                     continue;
@@ -366,24 +373,18 @@ impl VectorStore {
             let file_path_for_err = doc["file_path"].as_str().unwrap_or("").to_string();
 
             let symbol_kind = match doc["symbol_kind"].as_str() {
-                Some(s) => {
-                    let kind = match s.to_lowercase().as_str() {
-                        "function" => SymbolKind::Function,
-                        "implblock" => SymbolKind::ImplBlock,
-                        "unsaferegion" => SymbolKind::UnsafeRegion,
-                        "traitimpl" => SymbolKind::TraitImpl,
-                        "module" => SymbolKind::Module,
-                        "struct" => SymbolKind::Struct,
-                        "enum" => SymbolKind::Enum,
-                        "macro" => SymbolKind::Macro,
-                        _ => return Err(RagCoreError::UnknownSymbolKind(
-                                s.to_string(),
-                                doc_id_for_err.clone(),
-                                file_path_for_err.clone(),
-                            )),
-                    };
-                    Some(kind)
-                }
+                Some(s) => match s.to_lowercase().as_str() {
+                    "function" => Some(SymbolKind::Function),
+                    "implblock" => Some(SymbolKind::ImplBlock),
+                    "unsaferegion" => Some(SymbolKind::UnsafeRegion),
+                    "traitimpl" => Some(SymbolKind::TraitImpl),
+                    "module" => Some(SymbolKind::Module),
+                    "struct" => Some(SymbolKind::Struct),
+                    "enum" => Some(SymbolKind::Enum),
+                    "macro" => Some(SymbolKind::Macro),
+                    _other => return Err(RagCoreError::UnknownSymbolKind(
+                        s.to_string(), doc_id_for_err.clone(), file_path_for_err.clone())),
+                },
                 None => None,
             };
 
@@ -402,7 +403,6 @@ impl VectorStore {
         Ok(results)
     }
 
-    /// Build an inverted index from documents for BM25 scoring.
     fn build_inverted_index(
         &self,
         documents: &[serde_json::Value],
@@ -417,11 +417,9 @@ impl VectorStore {
                 continue;
             }
 
-            // Tokenize: lowercase + split on non-alphanumeric (keep underscores for Rust identifiers)
             let tokens = tokenize(text);
             let doc_len = tokens.len() as f64;
 
-            // Count term frequencies for this document
             let mut tf_map: HashMap<String, f64> = HashMap::new();
             for token in &tokens {
                 *tf_map.entry(token.clone()).or_default() += 1.0;
@@ -429,7 +427,6 @@ impl VectorStore {
 
             doc_stats.insert(doc_id.clone(), DocStat { doc_len });
 
-            // Add to inverted index (one posting per unique term per document)
             let terms: HashSet<String> = tokens.into_iter().collect();
             for term in terms {
                 let tf = *tf_map.get(&term).unwrap_or(&0.0);
@@ -443,15 +440,12 @@ impl VectorStore {
         Ok((inverted, doc_stats))
     }
 
-    /// Get the BM25 inverted index, using an in-memory cache to avoid rebuilding on every query.
-    /// The cache is invalidated when the index file mtime changes or document count differs.
     fn get_bm25_cache(
         &self,
         documents: &[serde_json::Value],
     ) -> Result<(InvertedIndex, HashMap<String, DocStat>), RagCoreError> {
         let index_path = self.path.join("index.jsonl");
 
-        // Compute current file state for cache invalidation
         let (current_mtime, doc_count) = if index_path.exists() {
             let meta = std::fs::metadata(&index_path)?;
             let mtime = meta
@@ -463,7 +457,6 @@ impl VectorStore {
             (0, 0)
         };
 
-        // Check cache hit: same mtime and same document count
         {
             let cache = self.bm25_cache.read().unwrap();
             if let Some(entry) = &*cache {
@@ -473,10 +466,8 @@ impl VectorStore {
             }
         }
 
-        // Cache miss — build the inverted index and store it
         let (inverted, doc_stats) = self.build_inverted_index(documents)?;
 
-        // Only cache if we have documents (empty index doesn't need caching)
         if !documents.is_empty() {
             let mut cache = self.bm25_cache.write().unwrap();
             *cache = Some(Bm25CacheEntry {
@@ -492,41 +483,34 @@ impl VectorStore {
 }
 
 // ---------------------------------------------------------------------------
-// BM25 inverted index structures
+// BM25 structures
 // ---------------------------------------------------------------------------
 
-/// A term posting: which document ids contain this term and how often.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct Posting {
     doc_id: String,
-    tf: f64, // term frequency in this document
+    tf: f64,
 }
 
-/// Inverted index entry: term -> postings list.
 type InvertedIndex = HashMap<String, Vec<Posting>>;
 
-/// Per-document statistics needed for BM25 normalization.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct DocStat {
-    doc_len: f64, // number of tokens in this document
+    doc_len: f64,
 }
 
-/// BM25 parameters — standard values from Robertson et al.
 const BM25_K1: f64 = 1.5;
 const BM25_B: f64 = 0.75;
 
-/// Compute BM25 score for a single term in a single document.
 fn bm25_term_score(tf: f64, doc_len: f64, avgdl: f64, df: u64, total_docs: usize) -> f64 {
     if tf == 0.0 || df as usize >= total_docs {
         return 0.0;
     }
 
-    // IDF component
     let idf = ((total_docs as f64 - df as f64 + 0.5) / (df as f64 + 0.5))
         .ln()
         .max(1e-10);
 
-    // TF component with length normalization
     let tf_component =
         tf / (tf + BM25_K1 * (1.0 - BM25_B + BM25_B * doc_len.max(1.0) / avgdl.max(1.0)));
 
@@ -534,12 +518,9 @@ fn bm25_term_score(tf: f64, doc_len: f64, avgdl: f64, df: u64, total_docs: usize
 }
 
 // ---------------------------------------------------------------------------
-// Tokenization helper
+// Tokenization
 // ---------------------------------------------------------------------------
 
-/// Tokenize text into lowercase alphanumeric tokens for BM25.
-/// Splits on whitespace and punctuation, keeps Rust identifiers intact.
-/// Allows single-character tokens (important for generics like `T`, `U` and short vars).
 fn tokenize(text: &str) -> Vec<String> {
     text.to_lowercase()
         .split(|c: char| !c.is_alphanumeric() && c != '_')
@@ -552,10 +533,14 @@ fn tokenize(text: &str) -> Vec<String> {
 // Search filters
 // ---------------------------------------------------------------------------
 
+use rust_rag_indexer::SymbolKind;
+
 /// Optional metadata filters for search queries.
 #[derive(Default, Clone)]
 pub struct SearchFilters {
+    /// Filter to only include documents from files with this extension (e.g., "rs").
     pub file_extension: Option<String>,
+    /// Filter to only include documents of this symbol kind.
     pub symbol_kind: Option<SymbolKind>,
 }
 
@@ -582,12 +567,9 @@ impl SearchFilters {
 }
 
 // ---------------------------------------------------------------------------
-// SearchResult & SymbolKind (re-exported from indexer)
+// SearchResult with custom deserializer for SymbolKind
 // ---------------------------------------------------------------------------
 
-pub use crate::indexer::SymbolKind;
-
-/// Parse a SymbolKind from its lowercase string representation.
 fn parse_symbol_kind(s: &str) -> Result<SymbolKind, RagCoreError> {
     match s.to_lowercase().as_str() {
         "function" => Ok(SymbolKind::Function),
@@ -599,26 +581,32 @@ fn parse_symbol_kind(s: &str) -> Result<SymbolKind, RagCoreError> {
         "enum" => Ok(SymbolKind::Enum),
         "macro" => Ok(SymbolKind::Macro),
         other => Err(RagCoreError::UnknownSymbolKind(
-            other.to_string(),
-            String::new(),
-            String::new(),
+            other.to_string(), String::new(), String::new(),
         )),
     }
 }
 
+/// A search result returned by the vector store.
 #[derive(Debug, Clone, Serialize)]
 pub struct SearchResult {
+    /// Unique document ID.
     pub id: String,
+    /// Source file path.
     pub file_path: PathBuf,
+    /// Start line number.
     pub line_start: usize,
+    /// End line number.
     pub line_end: usize,
+    /// Module name of the symbol.
     pub module_name: String,
+    /// Symbol kind (may be None if not deserializable).
     pub symbol_kind: Option<SymbolKind>,
+    /// Source text snippet.
     pub text: String,
+    /// Cosine similarity score from embedding search.
     pub score: f32,
 }
 
-// Manual Deserialize impl for SearchResult to use the custom SymbolKind deserializer.
 impl<'de> Deserialize<'de> for SearchResult {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -653,6 +641,10 @@ impl<'de> Deserialize<'de> for SearchResult {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Cosine similarity helpers
+// ---------------------------------------------------------------------------
+
 /// Compute cosine similarity between two vectors. Returns a value in [-1, 1].
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() {
@@ -668,8 +660,7 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     dot / (mag_a * mag_b)
 }
 
-/// Compute cosine similarity between a pre-magnitued query vector and a document vector.
-/// `query_mag` must be the magnitude of `a`, precomputed once before the loop.
+/// Compute cosine similarity with a precomputed query magnitude.
 pub fn cosine_similarity_with_precomputed(a: &[f32], query_mag: f32, b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() {
         return 0.0;
@@ -681,4 +672,101 @@ pub fn cosine_similarity_with_precomputed(a: &[f32], query_mag: f32, b: &[f32]) 
         return 0.0;
     }
     dot / (query_mag * mag_b)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rust_rag_indexer::SymbolKind;
+
+    fn make_test_vector_store() -> (tempfile::TempDir, VectorStore) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let store = VectorStore::open(path).expect("should create store");
+
+        let chunk = Chunk {
+            file_path: PathBuf::from("test.rs"),
+            line_start: 1,
+            line_end: 5,
+            module_name: "test".to_string(),
+            symbol_kind: SymbolKind::Function,
+            text: "fn test_fn() -> &'static str { \"hello\" }".to_string(),
+            max_nesting_depth: None,
+        };
+
+        let embedding = vec![0.1; 384];
+        let doc = Document {
+            id: "test_doc_1".into(),
+            chunk,
+            embedding,
+        };
+
+        store.insert_documents(&[doc]).expect("should insert");
+
+        (dir, store)
+    }
+
+    #[test]
+    fn test_vector_store_roundtrip() {
+        let (_dir, store) = make_test_vector_store();
+
+        let query_vec: Vec<f32> = vec![1.0; 384];
+        let results = store.search_by_embedding(&query_vec, 5).expect("should search");
+
+        assert_eq!(results.len(), 1);
+        let result = &results[0];
+        assert_eq!(result.file_path.display().to_string(), "test.rs");
+        assert_eq!(result.line_start, 1);
+        assert!(!result.text.is_empty());
+    }
+
+    #[test]
+    fn test_vector_store_empty_search() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = VectorStore::open(dir.path()).expect("should create empty store");
+
+        let query_vec: Vec<f32> = vec![1.0; 384];
+        let results = store.search_by_embedding(&query_vec, 5).expect("should search");
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_cosine_similarity_identical_vectors() {
+        let v = vec![1.0; 384];
+        let sim = cosine_similarity(&v, &v);
+        // f32 accumulation over 384 elements gives ~5e-8 error; use a tolerant threshold.
+        assert!((sim - 1.0).abs() < 1e-7);
+    }
+
+    #[test]
+    fn test_cosine_similarity_orthogonal_vectors() {
+        let mut a = vec![0.0; 384];
+        a[0] = 1.0;
+        let mut b = vec![0.0; 384];
+        b[1] = 1.0;
+        let sim = cosine_similarity(&a, &b);
+        assert!(sim.abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_cosine_similarity_opposite_vectors() {
+        let a: Vec<f32> = vec![1.0, 2.0, 3.0];
+        let b: Vec<f32> = vec![-1.0, -2.0, -3.0];
+        let sim = cosine_similarity(&a, &b);
+        assert!(sim < -0.99);
+    }
+
+    #[test]
+    fn test_cosine_similarity_empty_vectors() {
+        let a: Vec<f32> = vec![];
+        let b: Vec<f32> = vec![1.0; 384];
+        assert_eq!(cosine_similarity(&a, &b), 0.0);
+    }
+
+    #[test]
+    fn test_cosine_similarity_mismatched_lengths() {
+        let a = vec![1.0; 100];
+        let b = vec![1.0; 200];
+        assert_eq!(cosine_similarity(&a, &b), 0.0);
+    }
 }

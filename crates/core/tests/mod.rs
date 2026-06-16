@@ -2022,7 +2022,7 @@ macro_rules! outer {
 
     let macro_chunks: Vec<_> = chunks.iter().filter(|c| c.symbol_kind == SymbolKind::Macro).collect();
     // Should find the outer macro definition; inner!() invocation must not be a chunk.
-    assert!(macro_chunks.len() >= 1, "Should extract at least one macro chunk");
+    assert!(!macro_chunks.is_empty(), "Should extract at least one macro chunk");
 
     // Verify no chunk text contains the standalone invocation without 'macro_rules!'
     for chunk in &chunks {

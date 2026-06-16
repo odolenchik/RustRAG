@@ -2717,6 +2717,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "rust-rag-callgraph"
+version = "0.7.14"
+dependencies = [
+ "anyhow",
+ "petgraph",
+ "ra_ap_syntax",
+ "rust-rag-error",
+ "rust-rag-indexer",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
 name = "rust-rag-cli"
 version = "0.7.14"
 dependencies = [
@@ -2739,17 +2754,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "rust-rag-config"
+version = "0.7.14"
+dependencies = [
+ "rust-rag-error",
+ "serde",
+ "toml",
+]
+
+[[package]]
 name = "rust-rag-core"
 version = "0.7.14"
 dependencies = [
  "anyhow",
  "criterion",
- "dirs",
- "fastembed",
- "glob",
  "petgraph",
- "ra_ap_syntax",
- "reqwest",
+ "rust-rag-callgraph",
+ "rust-rag-config",
+ "rust-rag-embedding",
+ "rust-rag-error",
+ "rust-rag-indexer",
+ "rust-rag-state",
+ "rust-rag-vector-store",
  "serde",
  "serde_json",
  "sha2",
@@ -2759,6 +2785,50 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "rust-rag-embedding"
+version = "0.7.14"
+dependencies = [
+ "anyhow",
+ "dirs",
+ "fastembed",
+ "once_cell",
+ "reqwest",
+ "rust-rag-config",
+ "rust-rag-error",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "rust-rag-error"
+version = "0.7.14"
+dependencies = [
+ "anyhow",
+ "reqwest",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "rust-rag-indexer"
+version = "0.7.14"
+dependencies = [
+ "anyhow",
+ "glob",
+ "rust-rag-config",
+ "rust-rag-error",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.18",
+ "toml",
+ "tracing",
  "tree-sitter",
  "tree-sitter-rust",
  "walkdir",
@@ -2808,6 +2878,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "rust-rag-state"
+version = "0.7.14"
+dependencies = [
+ "anyhow",
+ "rust-rag-error",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
 name = "rust-rag-tui"
 version = "0.7.14"
 dependencies = [
@@ -2820,6 +2904,21 @@ dependencies = [
  "rust-rag-llm",
  "serde",
  "tokio",
+]
+
+[[package]]
+name = "rust-rag-vector-store"
+version = "0.7.14"
+dependencies = [
+ "anyhow",
+ "rust-rag-error",
+ "rust-rag-indexer",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

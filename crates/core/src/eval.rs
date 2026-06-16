@@ -40,6 +40,7 @@ pub struct EvaluationReport {
 /// Per-query evaluation detail.
 #[derive(Debug, Clone)]
 pub struct EvaluationDetail {
+    /// The query text this detail corresponds to.
     pub query: String,
     /// Position of the first relevant chunk (1-based), or 0 if none found.
     pub rank: usize,
@@ -104,8 +105,8 @@ fn find_rank_of_first_relevant(
     top_k: usize,
 ) -> usize {
     let limit = top_k.min(results.len());
-    for i in 0..limit {
-        if expected_ids.contains(&results[i].id) {
+    for (i, result) in results.iter().take(limit).enumerate() {
+        if expected_ids.contains(&result.id) {
             return i + 1; // 1-based rank
         }
     }
@@ -199,7 +200,7 @@ pub fn chunk_diagnostics(chunks: &[crate::indexer::Chunk]) -> ChunkDiagnostics {
         let mut all_overlaps = Vec::new();
         for chunk_list in files.values() {
             if chunk_list.len() >= 2 {
-                let mut sorted_chunks: Vec<_> = chunk_list.into_iter().collect();
+                let mut sorted_chunks: Vec<_> = chunk_list.iter().collect();
                 sorted_chunks.sort_by_key(|c| c.line_start);
                 // Adjacent chunks within the same file may have gaps or overlaps.
                 // Overlap here means previous.end > current.start (positive overlap).
@@ -274,7 +275,7 @@ pub fn chunk_diagnostics(chunks: &[crate::indexer::Chunk]) -> ChunkDiagnostics {
 }
 
 /// Sort a slice of f64 values in ascending order (in-place).
-fn sort_asc(v: &mut Vec<f64>) {
+fn sort_asc(v: &mut [f64]) {
     v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 }
 
@@ -481,14 +482,14 @@ mod tests {
 
         let diags = chunk_diagnostics(&chunks);
         assert_eq!(diags.chunk_count, 2);
-        // Should have both Function and ImplBlock kinds
+        // Should have both function and implblock kinds (lowercase per SymbolKind::symbol_kind_name())
         assert!(
-            diags.kinds_breakdown.contains_key("Function"),
-            "Should report Function kind"
+            diags.kinds_breakdown.contains_key("function"),
+            "Should report function kind"
         );
         assert!(
-            diags.kinds_breakdown.contains_key("ImplBlock"),
-            "Should report ImplBlock kind"
+            diags.kinds_breakdown.contains_key("implblock"),
+            "Should report implblock kind"
         );
     }
 

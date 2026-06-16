@@ -1,4 +1,10 @@
-use crate::error::RagCoreError;
+//! Persistent indexing state tracking with SHA-256 file hashing.
+//!
+//! Tracks which files have been indexed, detects incremental changes via
+//! content hashes, and manages chunk-ID bookkeeping for the vector store.
+
+#![warn(missing_docs)]
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -6,11 +12,14 @@ use std::fs;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
+pub use rust_rag_error::RagCoreError;
+
 const CHUNK_PREFIX: &str = concat!("chunk", "_");
 
 /// Metadata about a single indexed file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileMetadata {
+    /// SHA-256 hash of the file contents at indexing time.
     pub sha256: String,
 }
 
@@ -18,6 +27,7 @@ pub struct FileMetadata {
 /// Stored as `index_state.json` inside `.rustrag/`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexState {
+    /// Schema version (currently fixed at 1).
     pub version: u32,
     /// Maps file paths to their SHA-256 hash at indexing time.
     #[serde(default)]
@@ -28,6 +38,7 @@ pub struct IndexState {
 }
 
 impl IndexState {
+    /// Create a new empty index state.
     pub fn new() -> Self {
         Self {
             version: 1,
@@ -117,7 +128,7 @@ impl IndexState {
     /// Returns (new_files, changed_files, removed_chunk_ids).
     pub fn compare(
         &self,
-        current_files: &HashMap<PathBuf, String>, // path -> sha256 of current content
+        current_files: &HashMap<PathBuf, String>,
     ) -> (Vec<PathBuf>, Vec<PathBuf>, Vec<String>) {
         let mut new_files = Vec::new();
         let mut changed_files = Vec::new();
@@ -131,7 +142,6 @@ impl IndexState {
             }
         }
 
-        // Find removed files (in state but not in current)
         for path in self.files.keys() {
             if !current_files.contains_key(path) {
                 let prefix = format!("{}{}", CHUNK_PREFIX, path.display());
@@ -157,7 +167,6 @@ impl IndexState {
                     sha256: hash.clone(),
                 },
             );
-            // Collect chunk IDs that would be created from this file (line_start = 0 placeholder)
             let cid = format!("{}{}_{}", CHUNK_PREFIX, path.display(), 0);
             all_chunk_ids.push(cid);
         }
@@ -174,5 +183,26 @@ impl IndexState {
     pub fn has_changes(&self, current_files: &HashMap<PathBuf, String>) -> bool {
         let (new_files, changed_files, _) = self.compare(current_files);
         !new_files.is_empty() || !changed_files.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_index_state_new_is_empty() {
+        let state = IndexState::new();
+        assert!(state.files.is_empty());
+        assert!(state.chunk_ids.is_empty());
+    }
+
+    #[test]
+    fn test_compute_file_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("test.txt");
+        fs::write(&file_path, "hello world").unwrap();
+        let hash = IndexState::compute_file_hash(&file_path).unwrap();
+        assert_eq!(hash.len(), 64); // SHA-256 hex digest length
     }
 }

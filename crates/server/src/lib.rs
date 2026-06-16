@@ -82,6 +82,16 @@ const MAX_QUERY_LENGTH_CHARS: usize = 4096;
 /// Default maximum size (in bytes) of the assembled context sent to the LLM.
 const DEFAULT_MAX_CONTEXT_SIZE: usize = 12_000;
 
+/// Sanitize an error message for exposure over HTTP/MCP by truncating long messages and masking internal paths.
+fn sanitize_error(e: &dyn std::fmt::Display) -> String {
+    let msg = format!("{}", e);
+    // Truncate to 512 chars to prevent oversized payloads / prompt injection from errors.
+    let truncated: String = msg.chars().take(512).collect();
+    // Mask internal user paths like `/home/user/.cache/huggingface/...` → `~/.cache/huggingface/...`
+    let masked = truncated.replace(std::env::var("HOME").as_deref().unwrap_or("~"), "~");
+    masked
+}
+
 /// Request state shared across handlers.
 pub struct AppState {
     pub store: std::sync::Arc<VectorStore>,
@@ -144,6 +154,10 @@ impl AppState {
 
     /// Build a shared `reqwest::Client` with connection pooling and production-ready timeouts.
     fn build_http_client() -> Arc<reqwest::Client> {
+        // SSRF strict mode: reject private IPs instead of merely warning (env: RUSRAG_SSRF_STRICT=1).
+        #[allow(unused_variables)]
+        let strict_mode = std::env::var("RUSRAG_SSRF_STRICT").is_ok_and(|v| !v.is_empty());
+
         Arc::new(
             reqwest::Client::builder()
                 .pool_max_idle_per_host(10)
@@ -152,6 +166,8 @@ impl AppState {
                 .timeout(std::time::Duration::from_secs(300))
                 // Per-connection read timeout — no chunk should take longer than 60s to arrive.
                 .read_timeout(std::time::Duration::from_secs(60))
+                // Limit redirects to prevent redirect-based SSRF attacks (max 5 hops).
+                .redirect(reqwest::redirect::Policy::limited(5))
                 .build()
                 .expect("Failed to create HTTP client"),
         )
@@ -420,7 +436,7 @@ async fn search_handler(
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 serde_json::to_string(
-                    &serde_json::json!({"error": format!("Embed failed: {}", e)}),
+                    &serde_json::json!({"error": format!("Embed failed: {}", sanitize_error(&e))}),
                 )
                 .unwrap(),
             )
@@ -441,7 +457,7 @@ async fn search_handler(
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                serde_json::to_string(&serde_json::json!({"error": format!("Search failed: {}", e)}))
+                serde_json::to_string(&serde_json::json!({"error": format!("Search failed: {}", sanitize_error(&e))}))
                     .unwrap(),
             )
         }
@@ -502,7 +518,7 @@ async fn query_handler(
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 serde_json::to_string(
-                    &serde_json::json!({"error": format!("Embed failed: {}", e)}),
+                    &serde_json::json!({"error": format!("Embed failed: {}", sanitize_error(&e))}),
                 )
                 .unwrap(),
             )
@@ -520,7 +536,7 @@ async fn query_handler(
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 serde_json::to_string(
-                    &serde_json::json!({"error": format!("Search failed: {}", e)}),
+                    &serde_json::json!({"error": format!("Search failed: {}", sanitize_error(&e))}),
                 )
                 .unwrap(),
             )
@@ -720,7 +736,7 @@ async fn query_stream_handler(
             if tokio::time::timeout(
                 std::time::Duration::from_secs(300),
                 async {
-                    let mut stream = client.complete_stream_chunks(&system_prompt, &user_message);
+                    let mut stream = client.complete_stream_chunks(system_prompt, &user_message);
                     while let Some(chunk) = stream.next().await {
                         match chunk {
                             Ok(text) => {

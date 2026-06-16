@@ -15,3 +15,21 @@ tracing = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.42", features = ["full"] }
+sha2 = "0.10"
+walkdir = "2"
+glob = "0.3"
+toml = "0.8"
+tree-sitter = "0.25"
+tree-sitter-rust = "0.24"
+reqwest = { version = "0.12", features = ["blocking", "stream", "rustls-tls"] }
+petgraph = "0.6"
+ra_ap_syntax = "=0.0.178"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+dirs = "5"
+once_cell = "1.20"
+tempfile = "3"
+criterion = { version = "0.5", features = ["html_reports"] }
+fastembed = { version = "=4.0.0", default-features = false, features = ["ort-download-binaries"] }
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }

@@ -1,8 +1,22 @@
-use crate::error::RagCoreError;
+//! ONNX-based embedding inference with local caching.
+//!
+//! Loads a BGE model from disk (or downloads it from HuggingFace), provides
+//! single/batch text-to-embedding APIs, and caches embeddings in JSONL to
+//! avoid redundant ONNX inference during re-indexing.
+
+#![warn(missing_docs)]
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
+use serde_json; // needed for embedding cache serialization
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::fmt::Write as FmtWrite;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+
+pub use rust_rag_error::RagCoreError;
 
 use fastembed::{
     read_file_to_bytes, InitOptionsUserDefined, Pooling, TextEmbedding, TokenizerFiles,
@@ -18,7 +32,6 @@ fn init_embedder() -> Result<TextEmbedding, RagCoreError> {
         return Ok(em);
     }
 
-    // Model not found — attempt auto-download to HF cache
     let home = std::env::var("HOME").ok();
     let hf_target = match home.as_ref() {
         Some(h) => PathBuf::from(h).join(".cache/huggingface/hub"),
@@ -47,7 +60,6 @@ fn init_embedder() -> Result<TextEmbedding, RagCoreError> {
 
 /// Standard HuggingFace cache directory for downloaded models.
 fn hf_cache_model_dir() -> Option<PathBuf> {
-    // HF stores downloaded models under ~/.cache/huggingface/hub/
     let home = std::env::var("HOME").ok()?;
     let hub = PathBuf::from(&home).join(".cache/huggingface/hub");
 
@@ -55,19 +67,16 @@ fn hf_cache_model_dir() -> Option<PathBuf> {
         return None;
     }
 
-    // Look for model.onnx in the hub root (flat layout from manual copy)
     if hub.join("model.onnx").exists() {
         return Some(hub);
     }
 
-    // Check subdirectories: models--Xenova--bge-small-en-v1.5/snapshots/*/onnx/
     for entry in std::fs::read_dir(&hub).ok()?.flatten() {
         let path = entry.path();
         if !path.is_dir() {
             continue;
         }
 
-        // Check snapshots/*/onnx/model.onnx (standard HF layout)
         if let Ok(snapshots) = std::fs::read_dir(&path) {
             for snapshot in snapshots.flatten() {
                 let snap_path = snapshot.path();
@@ -75,7 +84,6 @@ fn hf_cache_model_dir() -> Option<PathBuf> {
                     continue;
                 }
 
-                // Canonicalize to resolve symlinks and .. components
                 if let Ok(resolved) = snap_path.canonicalize() {
                     if resolved.join("onnx").join("model.onnx").exists() {
                         return Some(resolved.join("onnx"));
@@ -84,7 +92,6 @@ fn hf_cache_model_dir() -> Option<PathBuf> {
             }
         }
 
-        // Also check direct model.onnx in repo directory (alternative layout)
         if path.join("model.onnx").exists() {
             return Some(path);
         }
@@ -94,26 +101,21 @@ fn hf_cache_model_dir() -> Option<PathBuf> {
 }
 
 /// Resolve the directory containing model files.
-/// Priority: env var > config file > HF cache > project-local Download/ > error.
 fn model_dir() -> PathBuf {
-    // 1) Explicit env var (highest priority)
     if let Ok(path) = std::env::var("RUSRAG_MODEL_PATH") {
         return PathBuf::from(path);
     }
 
-    // 2) Config file via config::Config::find()
-    if let Ok(config) = crate::config::Config::find() {
+    if let Ok(config) = rust_rag_config::Config::find() {
         if let Some(ref path_str) = config.embedding.model_path {
             return PathBuf::from(path_str);
         }
     }
 
-    // 3) Standard HuggingFace cache (~/.cache/huggingface/hub/) — works for any user, any machine
     if let Some(hf_dir) = hf_cache_model_dir() {
         return hf_dir;
     }
 
-    // 4) Absolute fallback — will fail gracefully on init with a clear error message
     PathBuf::from("/usr/local/share/rustrag/models")
 }
 
@@ -166,13 +168,10 @@ fn try_init_embedder(model_dir: &Path) -> Result<TextEmbedding, RagCoreError> {
     })
 }
 
-/// Lazy-initialized singleton embedder — loads ONNX model once on first use.
 static EMBEDDER: OnceLock<Result<TextEmbedding, RagCoreError>> = OnceLock::new();
 
-/// Get the lazy-initialized embedder, initializing it on first call.
-/// Returns an error if the ONNX model failed to load instead of panicking.
 fn get_embedder() -> Result<&'static TextEmbedding, RagCoreError> {
-    EMBEDDER.get_or_init(|| init_embedder())
+    EMBEDDER.get_or_init(init_embedder)
         .as_ref()
         .map_err(|e| RagCoreError::Embedding(
             "Embedding model initialization failed".to_string(),
@@ -184,7 +183,7 @@ fn get_embedder() -> Result<&'static TextEmbedding, RagCoreError> {
 #[tracing::instrument(level = "debug", skip_all, fields(text_len = text.len()))]
 pub fn embed(text: &str) -> Result<Vec<f32>, RagCoreError> {
     let result = get_embedder()?
-        .embed(vec![text.to_string()], None /* batch_size */)
+        .embed(vec![text.to_string()], None)
         .map_err(|e| {
             RagCoreError::Embedding(
                 "Failed to compute embedding".to_string(),
@@ -192,7 +191,6 @@ pub fn embed(text: &str) -> Result<Vec<f32>, RagCoreError> {
             )
         })?;
 
-    // Result is Vec<Embedding> — iterate over batches, flatten to Vec<f32>
     Ok(result.into_iter().flatten().collect())
 }
 
@@ -222,20 +220,18 @@ fn hash_text(text: &str) -> String {
 }
 
 /// Embedding cache — stores (text_hash -> embedding) pairs in a JSONL file.
-/// Reduces redundant ONNX inference during re-indexing.
+#[derive(Debug)]
 pub struct EmbedCache {
     path: PathBuf,
 }
 
 impl EmbedCache {
     /// Current model identifier used to invalidate stale caches.
-    /// SHA-256 hash of the ONNX model binary — changes automatically when weights change.
     fn model_id() -> String {
         let dir = model_dir();
         let onnx_path = dir.join("model.onnx");
 
         if !onnx_path.exists() {
-            // Fallback: use a placeholder so stale caches are simply invalidated
             return "no-model-found".to_string();
         }
 
@@ -253,8 +249,7 @@ impl EmbedCache {
         }
     }
 
-    /// Look up cached embeddings for texts, returning `Vec<Option<Vec\<f32>>`>.
-    /// Returns None for uncached entries.
+    /// Look up cached embeddings for texts, returning `Vec<Option<Vec<f32>>>`.
     pub fn lookup(&self, texts: &[&str]) -> Result<Vec<Option<Vec<f32>>>, RagCoreError> {
         let cache = self.read_cache()?;
         Ok(texts
@@ -263,8 +258,8 @@ impl EmbedCache {
             .collect())
     }
 
-    fn read_cache(&self) -> Result<std::collections::HashMap<String, Vec<f32>>, RagCoreError> {
-        let mut cache = std::collections::HashMap::new();
+    fn read_cache(&self) -> Result<HashMap<String, Vec<f32>>, RagCoreError> {
+        let mut cache = HashMap::new();
         if !self.path.exists() {
             return Ok(cache);
         }
@@ -272,20 +267,18 @@ impl EmbedCache {
         let current_model_id = Self::model_id();
         let content = std::fs::read_to_string(&self.path)?;
 
-        // First line may be a model_id marker (starts with "#model_id=")
         let mut lines = content.lines().peekable();
         if let Some(first_line) = lines.peek() {
             if first_line.starts_with("#model_id=") {
                 let stored_model_id = first_line.trim_start_matches("#model_id=").to_string();
                 if stored_model_id != current_model_id {
-                    // Model changed — cache is stale, return empty to force regeneration
                     eprintln!(
                         "[rustrag] Embedding cache invalidated: model_id mismatch ({} != {})",
                         stored_model_id, current_model_id
                     );
                     return Ok(cache);
                 }
-                lines.next(); // skip the marker line
+                lines.next();
             }
         }
 
@@ -308,7 +301,6 @@ impl EmbedCache {
     }
 
     /// Write new embeddings for previously uncached entries. Returns the count of cached hits.
-    /// Uses atomic file replacement (write to temp, then rename) to prevent corruption on crash.
     pub fn write_back(
         &self,
         texts: &[&str],
@@ -328,7 +320,6 @@ impl EmbedCache {
             }
         }
 
-        // Build content in memory first (complete, consistent representation)
         let mut content = String::with_capacity(4096);
         writeln!(content, "#model_id={}", Self::model_id())?;
         for (k, v) in &cache {
@@ -336,10 +327,20 @@ impl EmbedCache {
             writeln!(content, "{}", serde_json::to_string(&line).unwrap())?;
         }
 
-        // Atomic write: write to temp file first, then rename (POSIX atomic)
         let tmp_path = self.path.with_extension("jsonl.tmp");
         std::fs::write(&tmp_path, &content)?;
-        std::fs::rename(&tmp_path, &self.path)?;
+        #[cfg(unix)]
+        if let Err(e) = std::fs::set_permissions(
+            &self.path,
+            PermissionsExt::from_mode(0o600),
+        ) {
+            tracing::warn!(
+                "[warning] Failed to set file permissions on {}: {}",
+                self.path.display(),
+                e
+            );
+        }
+        let _ = std::fs::rename(&tmp_path, &self.path);
 
         Ok(())
     }
@@ -370,19 +371,15 @@ pub fn model_cache_dir() -> Result<PathBuf, RagCoreError> {
 }
 
 /// Download the bge-small-en-v1.5 model files from HuggingFace and save them to a target directory.
-/// Verifies SHA-256 checksums if RUSRAG_MODEL_CHECKSUMS env var is set (newline-separated `sha256:filename` pairs).
 pub fn download_model(target: &Path) -> Result<(), RagCoreError> {
     let repo = "BAAI/bge-small-en-v1.5";
-    let revision = "main";
 
-    // Files in the root of the repository + inside onnx/ subdirectory.
-    // Our embedder expects these exact filenames in one directory.
     let files: Vec<(&str, &str)> = vec![
         ("config.json", "config.json"),
         ("special_tokens_map.json", "special_tokens_map.json"),
         ("tokenizer.json", "tokenizer.json"),
         ("tokenizer_config.json", "tokenizer_config.json"),
-        ("onnx/model.onnx", "model.onnx"), // flatten onnx/ -> root
+        ("onnx/model.onnx", "model.onnx"),
     ];
 
     let client = reqwest::blocking::Client::builder()
@@ -390,16 +387,15 @@ pub fn download_model(target: &Path) -> Result<(), RagCoreError> {
         .redirect(reqwest::redirect::Policy::limited(10))
         .build()?;
 
-    // Parse optional checksum overrides from env (e.g. "sha256:model.onnx=<hash>")
-    let expected_checksums: std::collections::HashMap<String, String> = parse_expected_checksums();
+    let expected_checksums: HashMap<String, String> = parse_expected_checksums();
 
     std::fs::create_dir_all(target)?;
 
     for &(remote_path, local_name) in &files {
         println!("Downloading {}...", remote_path);
         let url = format!(
-            "https://huggingface.co/{}/resolve/{}/{}",
-            repo, revision, remote_path
+            "https://huggingface.co/{}/resolve/{}",
+            repo, remote_path
         );
 
         let response = client.get(&url).send().map_err(|e| {
@@ -415,7 +411,6 @@ pub fn download_model(target: &Path) -> Result<(), RagCoreError> {
             ));
         }
 
-        // Validate content-type for critical files (ONNX model and config files must not be HTML/error pages).
         if let Some(content_type) = response.headers().get(reqwest::header::CONTENT_TYPE) {
             let ct = content_type.to_str().unwrap_or("");
             if local_name == "model.onnx"
@@ -435,13 +430,7 @@ pub fn download_model(target: &Path) -> Result<(), RagCoreError> {
         }
 
         let bytes = response.bytes()?;
-        println!(
-            "  -> {} ({} bytes)",
-            local_name,
-            bytes.len().try_into().unwrap_or(u64::MAX)
-        );
 
-        // Verify SHA-256 checksum if provided via env.
         if let Some(expected_hash) = expected_checksums.get(local_name) {
             let digest = sha256_hex(&bytes);
             if digest[..] != expected_hash[..] {
@@ -461,13 +450,10 @@ pub fn download_model(target: &Path) -> Result<(), RagCoreError> {
     Ok(())
 }
 
-/// Parse RUSRAG_MODEL_CHECKSUMS env var.
-/// Format: newline-separated `sha256:<filename>=<hex-digest>` lines.
-fn parse_expected_checksums() -> std::collections::HashMap<String, String> {
-    let mut map = std::collections::HashMap::new();
+fn parse_expected_checksums() -> HashMap<String, String> {
+    let mut map = HashMap::new();
     if let Ok(val) = std::env::var("RUSRAG_MODEL_CHECKSUMS") {
         for line in val.lines().filter(|l| !l.trim().is_empty()) {
-            // Parse "sha256:<filename>=<hash>"
             if let Some(rest) = line.strip_prefix("sha256:") {
                 if let Some((filename, hash)) = rest.split_once('=') {
                     if !filename.is_empty() && !hash.is_empty() {
@@ -480,7 +466,6 @@ fn parse_expected_checksums() -> std::collections::HashMap<String, String> {
     map
 }
 
-/// Compute SHA-256 hex digest of binary data.
 fn sha256_hex(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(data);
