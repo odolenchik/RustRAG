@@ -2,7 +2,7 @@ pub mod editor;
 pub mod transcript;
 
 /// LLM state tracking (shared between components).
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum LlmState {
     Idle,
     Loading,
