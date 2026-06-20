@@ -124,6 +124,32 @@ fn handle_tools_list(state: &McpState) -> Result<Value> {
                     },
                     "required": ["question"]
                 }
+            },
+            {
+                "name": "rag_workspace_info",
+                "description": "Get structured information about the workspace: list of all crates, their paths, dependencies from Cargo.toml, and README.md content.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "detail_level": {
+                            "type": "string",
+                            "enum": ["summary", "full"],
+                            "description": "Level of detail: 'summary' for crate names and paths, 'full' also includes dependencies from Cargo.toml"
+                        }
+                    },
+                    "required": []
+                }
+            },
+            {
+                "name": "rag_file_read",
+                "description": "Read the full content of a file within the workspace. Path is relative to the workspace root.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": { "type": "string", "description": "Relative path to the file from workspace root (e.g., 'crates/server/src/lib.rs')" }
+                    },
+                    "required": ["file_path"]
+                }
             }
         ]
     }))
@@ -135,6 +161,8 @@ async fn handle_tools_call(params: Value, store_path: &std::path::Path) -> Resul
     match call_params.name.as_str() {
         "rag_search" => rag_search_tool(&call_params.arguments, store_path),
         "rag_query" => rag_query_tool(&call_params.arguments, store_path).await,
+        "rag_workspace_info" => Ok(rag_workspace_info_tool(&call_params.arguments)),
+        "rag_file_read" => Ok(rag_file_read_tool(&call_params.arguments)?),
         _ => anyhow::bail!("Unknown tool: {}", call_params.name),
     }
 }
@@ -334,6 +362,128 @@ async fn rag_query_tool(args: &Value, store_path: &std::path::Path) -> Result<Va
     Ok(serde_json::json!({
         "content": format!("Answer:\n{}\n\nCitations:\n{}", answer, serde_json::to_string_pretty(&citations).unwrap_or_default()),
     }))
+}
+
+// ---- New tool: rag_workspace_info -------------------------------------------
+
+fn rag_workspace_info_tool(args: &Value) -> Value {
+    let detail_level: &str = args.get("detail_level").and_then(|v| v.as_str()).unwrap_or("summary");
+    let ws_root = match std::env::var("RUSRAG_WORKSPACE") {
+        Ok(p) => std::path::PathBuf::from(p),
+        Err(_) => std::env::current_dir().unwrap_or_default(),
+    };
+
+    let cargo_toml_path = ws_root.join("Cargo.toml");
+    if !cargo_toml_path.exists() {
+        return serde_json::json!({"workspace_root": ws_root.to_string_lossy().to_string(), "error": "No Cargo.toml found", "crates": []});
+    }
+
+    let cargo_content = match std::fs::read_to_string(&cargo_toml_path) {
+        Ok(c) => c,
+        Err(e) => return serde_json::json!({"workspace_root": ws_root.to_string_lossy().to_string(), "error": format!("Failed to read Cargo.toml: {}", e), "crates": []}),
+    };
+
+    let cargo_value: toml::Value = match cargo_content.parse() {
+        Ok(v) => v,
+        Err(e) => return serde_json::json!({"workspace_root": ws_root.to_string_lossy().to_string(), "error": format!("Failed to parse Cargo.toml: {}", e), "crates": []}),
+    };
+
+    let member_dirs: Vec<String> = if let Some(workspace) = cargo_value.get("workspace") {
+        workspace.get("members").and_then(|m| m.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str()).map(String::from).collect())
+            .unwrap_or_default()
+    } else { vec![".".to_string()] };
+
+    let mut crates_info: Vec<Value> = Vec::new();
+
+    for member_pattern in &member_dirs {
+        let full_pattern = ws_root.join(member_pattern);
+        let matches = match glob::glob(&full_pattern.to_string_lossy()) {
+            Ok(m) => m.filter_map(|e| e.ok()).collect::<Vec<_>>(),
+            Err(_) => Vec::new(),
+        };
+
+        for member_dir in &matches {
+            if !member_dir.is_dir() || !member_dir.join("Cargo.toml").exists() { continue; }
+
+            let content = match std::fs::read_to_string(member_dir.join("Cargo.toml")) { Ok(c) => c, Err(_) => continue };
+            let mv: toml::Value = match content.parse() { Ok(v) => v, Err(_) => continue };
+
+            let mut ci: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
+            ci.insert("name".to_string(), Value::String(
+                mv.get("package").and_then(|p| p.get("name")).and_then(|n| n.as_str()).unwrap_or("unknown").to_string()
+            ));
+
+            let rel_path = match member_dir.strip_prefix(&ws_root) {
+                Ok(p) if p.as_os_str().is_empty() || p == std::path::Path::new(".") => ".".to_string(),
+                Ok(p) => p.to_string_lossy().to_string(),
+                Err(_) => member_dir.to_string_lossy().to_string(),
+            };
+            ci.insert("path".to_string(), Value::String(rel_path));
+
+            if detail_level == "full" {
+                let deps: Vec<String> = mv.get("dependencies").and_then(|d| d.as_table())
+                    .map(|t| t.iter().filter(|(n, _)| !n.starts_with("rust-rag")).map(|(n, _)| n.clone()).collect())
+                    .unwrap_or_default();
+                ci.insert("dependencies".to_string(), serde_json::to_value(deps).unwrap_or(Value::Null));
+
+                let readme_path = member_dir.join("README.md");
+                if readme_path.exists() {
+                    if let Ok(rc) = std::fs::read_to_string(&readme_path) {
+                        ci.insert("readme".to_string(), Value::String(if rc.chars().count() > 2000 { format!("{}\n... (truncated)", &rc.chars().take(2000).collect::<String>()) } else { rc }));
+                    }
+                }
+            }
+
+            crates_info.push(Value::Object(serde_json::Map::from_iter(ci)));
+        }
+    }
+
+    // Check for implicit members (non-member dirs with Cargo.toml)
+    if member_dirs.len() == 1 && member_dirs[0] == "." {
+        let entries = match std::fs::read_dir(&ws_root) { Ok(e) => e.filter_map(|x| x.ok()).collect::<Vec<_>>(), Err(_) => Vec::new() };
+        for entry in &entries {
+            if !entry.path().is_dir() || entry.path() == ws_root { continue; }
+            if entry.path().join("Cargo.toml").exists() {
+                let covered = crates_info.iter().any(|c| c.get("path").and_then(|p| p.as_str()) == Some(&entry.path().strip_prefix(&ws_root).unwrap_or(&entry.path()).to_string_lossy()));
+                if !covered {
+                    crates_info.push(serde_json::json!({"name": entry.file_name().to_string_lossy(), "path": entry.path().strip_prefix(&ws_root).unwrap_or(&entry.path()).to_string_lossy()}));
+                }
+            }
+        }
+    }
+
+    serde_json::json!({ "workspace_root": ws_root.to_string_lossy().to_string(), "crates": crates_info })
+}
+
+// ---- New tool: rag_file_read -------------------------------------------------
+
+fn rag_file_read_tool(args: &Value) -> Result<Value> {
+    let schema = serde_json::json!({"type":"object","properties":{"file_path":{"type":"string"}},"required":["file_path"]});
+    validate_tool_input(&schema, args).map_err(|e| anyhow::anyhow!("Invalid arguments: {}", e))?;
+
+    let file_path_str: String = args["file_path"].as_str().ok_or_else(|| anyhow::anyhow!("Missing or invalid 'file_path' argument"))?.to_string();
+
+    let ws_root = match std::env::var("RUSRAG_WORKSPACE") { Ok(p) => p, Err(_) => std::env::current_dir()?.to_string_lossy().to_string() };
+    let resolved = std::path::PathBuf::from(&ws_root).join(&file_path_str);
+
+    let canonical_ws = std::fs::canonicalize(&ws_root).unwrap_or_else(|_| std::path::PathBuf::from(&ws_root));
+    let canonical_file = match std::fs::canonicalize(&resolved) { Ok(p) => p, Err(_) => return Ok(serde_json::json!({"error": format!("File not found: {}", file_path_str), "file_path": file_path_str})) };
+
+    if !canonical_file.starts_with(&canonical_ws) {
+        return Ok(serde_json::json!({"error": format!("Access denied: file outside workspace root"), "file_path": file_path_str}));
+    }
+
+    let content = match std::fs::read_to_string(&canonical_file) {
+        Ok(c) => c,
+        Err(e) => return Ok(serde_json::json!({"error": format!("Failed to read: {}", e), "file_path": file_path_str})),
+    };
+
+    if content.len() > 100_000 {
+        return Ok(serde_json::json!({"error": format!("File too large: {} bytes (max 100KB)", content.len()), "file_path": file_path_str, "content_length": content.len()}));
+    }
+
+    Ok(serde_json::json!({ "file_path": file_path_str, "content": content, "content_length": content.len() }))
 }
 
 fn results_to_string(results: &[rust_rag_core::vector_store::SearchResult]) -> String {
