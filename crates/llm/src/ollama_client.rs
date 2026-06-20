@@ -237,8 +237,8 @@ impl LlmClient {
         Self::sync_runtime().block_on(client.complete(system_prompt, user_message))
     }
 
-    /// Synchronous chat with an explicit shared HTTP client for connection pooling.
-    pub fn chat_with_http_client(
+    /// Async chat with an explicit shared HTTP client for connection pooling.
+    pub async fn chat_with_http_client(
         http_client: std::sync::Arc<reqwest::Client>,
         endpoint: &str,
         model: &str,
@@ -246,7 +246,7 @@ impl LlmClient {
         user_message: &str,
     ) -> Result<String> {
         let client = LlmClient::new_with_http_client(endpoint, model, http_client);
-        Self::sync_runtime().block_on(client.complete(system_prompt, user_message))
+        client.complete(system_prompt, user_message).await
     }
 }
 

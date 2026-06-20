@@ -13,6 +13,7 @@ use futures_util::StreamExt;
 use rust_rag_core::{semantic_cache::SemanticCache, vector_store::VectorStore};
 use rust_rag_llm::ChatBackend;
 
+// logging handled by tracing crate (already imported via #[tracing::instrument])
 use serde::Deserialize;
 use std::{collections::VecDeque, path::Path, sync::Arc, time::Instant};
 use tower_http::cors::{AllowOrigin, CorsLayer};
@@ -136,13 +137,49 @@ impl AppState {
             .unwrap_or_else(|| "http://localhost:8080".to_string())
     }
 
-    /// Resolve LLM model with priority: config > LLAMA_MODEL env > default.
-    fn resolve_model() -> String {
+    /// Resolve LLM model with priority: env > config > auto-detect from /v1/models > default.
+    fn resolve_model(endpoint: &str) -> String {
         let cfg = rust_rag_core::config::Config::find().ok();
-        std::env::var("LLAMA_MODEL")
-            .ok()
-            .or_else(|| cfg.as_ref().and_then(|c| c.llm_config().model.clone()))
-            .unwrap_or_else(|| "default-rag-model".to_string())
+
+        // Priority 1: LLAMA_MODEL env var (highest).
+        if let Ok(model) = std::env::var("LLAMA_MODEL") {
+            return model;
+        }
+
+        // Priority 2: config file.
+        if let Some(c) = cfg.as_ref().and_then(|c| c.llm_config().model.clone()) {
+            if !c.is_empty() {
+                return c;
+            }
+        }
+
+        // Priority 3: auto-detect from LLM server's /v1/models endpoint.
+        let normalized_endpoint = if endpoint.starts_with("http") {
+            // Strip path, keep only origin (e.g. http://localhost:8080/chat/completions → http://localhost:8080)
+            endpoint.trim_end_matches('/').trim_end_matches("/chat/completions").trim_end_matches("/v1/chat/completions").to_string()
+        } else {
+            format!("http://{}/v1/models", endpoint)
+        };
+
+        if let Ok(client) = reqwest::blocking::Client::builder().timeout(std::time::Duration::from_secs(3)).build() {
+            if let Ok(resp) = client.get(&normalized_endpoint).send() {
+                if resp.status().is_success() {
+                    if let Ok(json) = resp.json::<serde_json::Value>() {
+                        if let Some(models) = json["data"].as_array() {
+                            if let Some(first_model) = models.first() {
+                                if let Some(name) = first_model.get("id").and_then(|v| v.as_str()) {
+                                    tracing::info!("Auto-detected LLM model from /v1/models: {}", name);
+                                    return name.to_string();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Priority 4: hardcoded default.
+        "default-rag-model".to_string()
     }
 
     /// Resolve optional API key from RUSRAG_API_KEY env var.
@@ -227,12 +264,13 @@ impl AppState {
             );
         }
         let store = VectorStore::open(&store_path)?;
+        let endpoint = Self::resolve_endpoint();
         Ok(Self {
             store: std::sync::Arc::new(store),
             rate_limiter: Arc::new(RateLimiter::new(rate_limit_per_min)),
             http_client: Self::build_http_client(),
-            llm_endpoint: Self::resolve_endpoint(),
-            llm_model: Self::resolve_model(),
+            llm_endpoint: endpoint.clone(),
+            llm_model: Self::resolve_model(&endpoint),
             api_key: Self::resolve_api_key(),
             max_context_size: Self::resolve_max_context_size(),
             semantic_cache: Self::resolve_semantic_cache(&store_path),
@@ -242,12 +280,13 @@ impl AppState {
     /// Create app state from a custom path.
     pub fn from_path(path: &Path, rate_limit_per_min: u32) -> Result<Self> {
         let store = VectorStore::open(path)?;
+        let endpoint = Self::resolve_endpoint();
         Ok(Self {
             store: std::sync::Arc::new(store),
             rate_limiter: Arc::new(RateLimiter::new(rate_limit_per_min)),
             http_client: Self::build_http_client(),
-            llm_endpoint: Self::resolve_endpoint(),
-            llm_model: Self::resolve_model(),
+            llm_endpoint: endpoint.clone(),
+            llm_model: Self::resolve_model(&endpoint),
             api_key: Self::resolve_api_key(),
             max_context_size: Self::resolve_max_context_size(),
             semantic_cache: Self::resolve_semantic_cache(path),
@@ -368,9 +407,9 @@ pub fn build_router(state: AppState) -> Router {
         .fallback(handler_not_found)
 }
 
-/// Request parameters for `/search`.
+/// Request body for `/search` — JSON payload with query and optional top_k.
 #[derive(Debug, Deserialize)]
-struct SearchQuery {
+struct SearchQueryBody {
     query: String,
     #[serde(default = "default_top_k")]
     top_k: usize,
@@ -399,11 +438,11 @@ async fn status_handler(state: axum::extract::State<AppState>) -> JsonResponse<s
 }
 
 /// POST /search — semantic search over indexed chunks (no LLM).
-#[tracing::instrument(level = "info", skip_all, fields(query = params.query.as_str()))]
+#[tracing::instrument(level = "info", skip_all)]
 async fn search_handler(
     state: axum::extract::State<AppState>,
     headers: axum::http::HeaderMap,
-    Query(params): Query<SearchQuery>,
+    Json(params): Json<SearchQueryBody>,
 ) -> impl axum::response::IntoResponse {
     // Enforce Bearer token auth when API key is configured
     if let Some(unauth_status) = enforce_auth(&headers, &state.api_key, "/search") {
@@ -558,24 +597,22 @@ async fn query_handler(
     let endpoint = state.0.llm_endpoint.clone();
     let model = state.0.llm_model.clone();
     let http_client = std::sync::Arc::clone(&state.0.http_client);
-    let answer = tokio::time::timeout(
+    let answer_result = tokio::time::timeout(
         std::time::Duration::from_secs(120),
-        tokio::task::spawn_blocking(move || {
-            rust_rag_llm::ollama_client::LlmClient::chat_with_http_client(
-                http_client,
-                &endpoint,
-                &model,
-                system_prompt,
-                &user_message,
-            )
-        }),
+        rust_rag_llm::ollama_client::LlmClient::chat_with_http_client(
+            http_client,
+            &endpoint,
+            &model,
+            system_prompt,
+            &user_message,
+        ),
     )
     .await;
 
-    let (answer_text, was_ok) = match &answer {
-        Ok(Ok(Ok(a))) => (a.clone(), true),
-        Ok(Ok(Err(e))) => (format!("LLM error: {}", e), false),
-        Ok(Err(_)) | Err(_) => ("LLM server busy (request timed out)".to_string(), false),
+    let (answer_text, was_ok) = match &answer_result {
+        Ok(Ok(a)) => (a.clone(), true),
+        Ok(Err(e)) => (format!("LLM error: {}", e), false),
+        Err(_) => ("LLM server busy (request timed out)".to_string(), false),
     };
 
     // On successful LLM response, write back to semantic cache for future lookups.

@@ -114,17 +114,7 @@ fn handle_tools_list(state: &McpState) -> Result<Value> {
                     "required": ["query"]
                 }
             },
-            {
-                "name": "rag_query",
-                "description": "Ask a question about the indexed Rust codebase. Returns an LLM-generated answer with source citations.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "question": { "type": "string", "description": "The question to ask about the codebase" }
-                    },
-                    "required": ["question"]
-                }
-            },
+
             {
                 "name": "rag_workspace_info",
                 "description": "Get structured information about the workspace: list of all crates, their paths, dependencies from Cargo.toml, and README.md content.",
@@ -160,7 +150,6 @@ async fn handle_tools_call(params: Value, store_path: &std::path::Path) -> Resul
 
     match call_params.name.as_str() {
         "rag_search" => rag_search_tool(&call_params.arguments, store_path),
-        "rag_query" => rag_query_tool(&call_params.arguments, store_path).await,
         "rag_workspace_info" => Ok(rag_workspace_info_tool(&call_params.arguments)),
         "rag_file_read" => Ok(rag_file_read_tool(&call_params.arguments)?),
         _ => anyhow::bail!("Unknown tool: {}", call_params.name),
@@ -298,69 +287,6 @@ fn rag_search_tool(args: &Value, store_path: &std::path::Path) -> Result<Value> 
 
     Ok(serde_json::json!({
         "content": results_to_string(&results),
-    }))
-}
-
-async fn rag_query_tool(args: &Value, store_path: &std::path::Path) -> Result<Value> {
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "question": { "type": "string", "maxLength": 4096 }
-        },
-        "required": ["question"]
-    });
-    validate_tool_input(&schema, args).map_err(|e| anyhow::anyhow!("Invalid arguments: {}", e))?;
-
-    let question: String = args["question"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("Missing or invalid 'question' argument"))?
-        .to_string();
-
-    if question.len() > 4096 {
-        return Err(anyhow::anyhow!(
-            "Question exceeds maximum length of 4096 characters (got {})",
-            question.len()
-        ));
-    }
-
-    let config = rust_rag_core::config::Config::find().unwrap_or_default();
-    let top_k = config.llm_config().top_k;
-
-    let embedding = rust_rag_core::embedding::embed(&question)?;
-    let store = rust_rag_core::vector_store::VectorStore::open(store_path)?;
-    let results = store.hybrid_search(&embedding, &question, top_k, 0.7, None)?;
-
-    let context: String = results
-        .iter()
-        .map(|r| format!("[{}:{}]\n{}", r.file_path.display(), r.line_start, r.text))
-        .collect::<Vec<_>>()
-        .join("\n\n");
-
-    let system_prompt = rust_rag_core::constants::DEFAULT_SYSTEM_PROMPT;
-    let user_message = format!("Question: {}\n\nRelevant code:\n{}", question, context);
-
-    // Use spawn_blocking to avoid nested runtime conflict — the MCP loop runs inside tokio's async main
-    let answer = tokio::task::spawn_blocking(move || {
-        rust_rag_llm::ollama_client::LlmClient::chat(system_prompt, &user_message)
-    })
-    .await
-    .map_err(|e| anyhow::anyhow!("LLM task join error: {}", e))??;
-
-    let citations: Vec<Value> = results
-        .iter()
-        .map(|r| {
-            serde_json::json!({
-                "file_path": r.file_path.to_string_lossy(),
-                "line_start": r.line_start,
-                "line_end": r.line_end,
-                "text": r.text,
-                "score": r.score,
-            })
-        })
-        .collect();
-
-    Ok(serde_json::json!({
-        "content": format!("Answer:\n{}\n\nCitations:\n{}", answer, serde_json::to_string_pretty(&citations).unwrap_or_default()),
     }))
 }
 

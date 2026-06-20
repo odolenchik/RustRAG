@@ -1,4 +1,4 @@
-# RustRAG v0.7.14
+# RustRAG v0.7.16
 
 **Local RAG for Rust codebases — full offline embeddings, hybrid BM25+vector search, MCP server.**
 
@@ -13,9 +13,9 @@ A self-hosted Retrieval-Augmented Generation tool built specifically for analyzi
 - **Automatic model download** — if no local model is found, `rust-rag` auto-downloads `bge-small-en-v1.5` (~127 MB) from HuggingFace to `~/.cache/huggingface/hub/`; supports both flat and standard HF cache layouts
 - **Configurable chunk overlap** — adjacent AST-extracted chunks within a file get overlapping context lines to preserve cross-boundary semantics (function calls, macro invocations spanning chunk edges)
 - **Call graph analysis** — AST-based call edge extraction using `ra_ap_syntax` (rust-analyzer's syntax crate); parses each chunk to find CallExpr nodes and extract callee names
-- **MCP server** — Model Context Protocol stdio server exposing `rag_search` and `rag_query` tools for AI coding agents (Claude Desktop, Cursor, Windsurf, etc.)
+- **MCP server** — Model Context Protocol stdio server exposing `rag_search`, `rag_workspace_info`, and `rag_file_read` tools for AI coding agents; designed for agent-only use without requiring external LLM calls
 - **Interactive TUI** — ratatui-based terminal interface with scrollable results, real-time streaming LLM answers, and keyboard navigation
-- **HTTP API + CORS** — axum server with `/search`, `/query`, `/query/stream`, and `/status` endpoints; SSE streaming support; cross-origin support for browser clients
+- **HTTP API + CORS** — axum server with `/search` (POST/JSON), `/query` (POST/JSON, full RAG with LLM), `/query/stream` (SSE), and `/status` endpoints; SSE streaming support; cross-origin support for browser clients
 - **Incremental indexing** — SHA-256-based file change detection with O(1) comparison (no redundant full-file scans); only re-indexes changed/new/deleted files. Stored in `.rustrag/index_state.json` for persistence across invocations.
 - **Symbol search** — `rust-rag symbol <name>` finds symbols by name across the index, showing kind (Function/ImplBlock/etc.), file path and line number.
 - **Semantic answer cache** — caches LLM answers in `semantic_cache.jsonl`; on repeated or semantically similar questions (cosine similarity ≥ 0.85), returns the cached answer instantly without an LLM call. Configurable TTL (default: 1 hour). Opt-in via config.
@@ -26,14 +26,19 @@ A self-hosted Retrieval-Augmented Generation tool built specifically for analyzi
 
 ## Architecture
 
-Five independent crates in a Cargo workspace:
+Nine independent crates in a Cargo workspace:
 
 | Crate | Purpose |
 |-------|---------|
 | `rust-rag-core` | Core engine: indexing (tree-sitter), embedding (fastembed/ONNX), vector store (JSONL + BM25), semantic LLM answer cache, retrieval, call graph analysis, incremental state management, config |
-| `rust-rag-cli` | CLI binary (`rust-rag`) with subcommands for index/ask/chat/reindex/info/clean/symbol |
+| `rust-rag-indexer` | AST-aware file indexer with tree-sitter-rust parsing and semantic chunking |
+| `rust-rag-embedding` | ONNX-based embedding computation with fastembed runtime |
+| `rust-rag-vector-store` | JSONL vector store with BM25 inverted index for hybrid search |
+| `rust-rag-callgraph` | AST-based call edge extraction using rust-analyzer syntax crate |
+| `rust-rag-state` | Incremental indexing state management (SHA-256 file hashes, changed file detection) |
+| `rust-rag-cli` | CLI binary (`rust-rag`) with subcommands for index/ask/chat/reindex/info/clean/symbol/stats |
 | `rust-rag-server` | HTTP API server (axum) and MCP stdio server; exposes search, query, and status endpoints |
-| `rust-rag-llm` | LLM client abstraction supporting OpenAI-compatible / Ollama backends with SSE streaming support |
+| `rust-rag-llm` | LLM client abstraction supporting OpenAI-compatible / Ollama backends with SSE streaming support and endpoint validation |
 | `rust-rag-tui` | Interactive terminal UI built on ratatui + crossterm with scrollable results and answer pane |
 
 ## Quick Start
@@ -114,9 +119,9 @@ RUSRAG_WORKSPACE=/workspace/path ./target/release/rust-rag-serve mcp
 
 **GET `/status`** — Workspace metadata (total chunks, index path)
 
-**POST `/search`** — Hybrid semantic search
+**POST `/search`** — Hybrid semantic search (accepts JSON body)
 ```json
-// Request
+// Request (Content-Type: application/json)
 {"query": "embedding model initialization", "top_k": 5}
 
 // Response
@@ -168,12 +173,15 @@ curl -H 'Accept: text/event-stream' "http://localhost:8090/query/stream?question
 
 ### MCP Protocol
 
-Implements **MCP stdio transport** (protocol version `2024-11-05`) with two tools:
+Implements **MCP stdio transport** (protocol version `2024-11-05`) with three tools:
 
 | Tool | Description | Arguments |
 |------|-------------|-----------|
 | `rag_search` | Search for code chunks by semantic similarity. Returns raw snippets with BM25+vector scores, file paths, line numbers, and metadata | `query` (string, max 4096 chars) — search query; `top_k` (integer, 1–100, default 5) — number of results to return |
-| `rag_query` | Full RAG pipeline: retrieves relevant chunks via hybrid search, builds context, and queries the LLM for an answer with source citations | `question` (string, max 4096 chars) — question about the indexed codebase |
+| `rag_workspace_info` | Get structured information about the workspace: list all crates, their paths, dependencies from Cargo.toml, and README.md content | `detail_level` (`summary` or `full`, optional) — level of detail |
+| `rag_file_read` | Read any file within the workspace by relative path (with directory traversal protection, 100KB limit) | `file_path` (string, required) — relative path from workspace root |
+
+**Design philosophy**: The MCP tools are designed for **AI coding agents** — they return raw code chunks without requiring an external LLM. Agents (`rag_search`) can analyze the returned code directly. For users who want full RAG answers with LLM-generated responses, use the HTTP `/query` endpoint instead (which auto-detects the model from `localhost:8080/v1/models`).
 
 The MCP server exposes itself over stdio: send JSON-RPC 2.0 requests on stdin and read responses from stdout. Supports `initialize`, `notifications/initialized`, `tools/list`, and `tools/call` methods.
 
@@ -206,7 +214,10 @@ chunk_overlap = 3
 [llm]
 # OpenAI-compatible /chat/completions endpoint (supports Ollama too)
 endpoint = "http://localhost:8080"
-model = "Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-IQ3_M.gguf"
+
+# Model name used by the LLM server. Leave empty to auto-detect from /v1/models.
+model = ""  # auto-detects first available model if empty
+
 top_k = 5
 ```
 
@@ -215,12 +226,15 @@ top_k = 5
 | Variable | Applies To | Default |
 |----------|-----------|---------|
 | `RUSRAG_MODEL_PATH` | Embedding model path (above config file) | — |
-| `LLAMA_ENDPOINT` | LLM HTTP endpoint | from config or default |
-| `LLAMA_MODEL` | LLM model name | from config or default |
+| `LLAMA_ENDPOINT` | LLM HTTP endpoint (`http://host:port/chat/completions`) | from config or default |
+| `LLAMA_MODEL` | LLM model name (overrides config; empty = auto-detect from `/v1/models`) | from config or default |
 | `RUSRAG_WORKSPACE` | Server workspace root | current directory |
+| `RUSRAG_API_KEY` | Bearer token for HTTP API authentication | none (auth disabled) |
 | `RUSRAG_SEMANTIC_CACHE_ENABLED` | Enable/disable semantic answer cache | `false` (opt-in) |
 | `RUSRAG_SEMANTIC_CACHE_TTL` | Semantic cache TTL in seconds | `3600` (1 hour) |
 | `RUSRAG_MAX_CONTEXT_SIZE` | Max assembled context bytes sent to LLM | `12000` (12 KB) |
+
+**Model auto-detection**: When `model = ""` in config or no `LLAMA_MODEL` env var is set, the server automatically queries the LLM endpoint's `/v1/models` API and uses the first available model. This eliminates the need to manually configure the model name.
 
 ## TUI Keyboard Shortcuts
 
@@ -241,12 +255,15 @@ top_k = 5
 
 ```bash
 cargo test --package rust-rag-core
-# Runs 59 tests covering: indexing, incremental state management, vector store roundtrip,
+# Runs 59+ tests covering: indexing, incremental state management, vector store roundtrip,
 # cosine similarity, hybrid search alpha blending, BM25 scoring, filters (symbol kind + file extension),
 # document removal, semantic answer cache (exact + similarity lookup, TTL expiry, persistence)
 
+cargo test --package rust-rag-server
+# Runs 14+ tests covering: rate limiter, auth, context trimming, server handlers
+
 cargo test --workspace
-# Runs 108 tests across all workspace crates
+# Runs 200+ tests across all workspace crates
 ```
 
 ## How It Works

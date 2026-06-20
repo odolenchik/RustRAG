@@ -1,0 +1,61 @@
+{
+  "run_id": "2025-06-16_optimization-baseline",
+  "timestamp": "2025-06-16T12:00:00Z",
+  "rustc_version": "1.85.0",
+  "optimizations_applied": [
+    "semantic_cache_append_only_wal",
+    "indexer_parallel_rayon",
+    "cosine_similarity_simd_unrolled",
+    "bm25_persistent_index",
+    "tokenize_borrowed_str",
+    "vector_store_dashmap"
+  ],
+  "benchmarks": {
+    "search_latency_p50_top1_ns": {
+      "mean": 642.2,
+      "ci_lower": 641.2,
+      "ci_upper": 642.5,
+      "change_percent": -9.7
+    },
+    "search_latency_p95_top10_ns": {
+      "mean": 635.2,
+      "ci_lower": 634.7,
+      "ci_upper": 635.8,
+      "change_percent": -12.7
+    },
+    "search_latency_p99_top50_ns": {
+      "mean": 641.8,
+      "ci_lower": 641.1,
+      "ci_upper": 642.5,
+      "change_percent": -11.0
+    },
+    "memory_usage_10_files_search_ns": {
+      "mean": 647.3,
+      "ci_lower": 643.7,
+      "ci_upper": 651.2,
+      "change_percent": -9.0
+    },
+    "memory_usage_30_files_search_ns": {
+      "mean": 644.6,
+      "ci_lower": 642.7,
+      "ci_upper": 648.0,
+      "change_percent": -10.3
+    },
+    "index_workspace_15_files_index_us": {
+      "mean": 839.5,
+      "ci_lower": 833.6,
+      "ci_upper": 845.4,
+      "change_percent": 0.0
+    },
+    "index_workspace_60_files_index_us": {
+      "mean": 1550.0,
+      "ci_lower": 1490.0,
+      "ci_upper": 1600.0,
+      "change_percent": 0.0
+    }
+  },
+  "tests": {
+    "total_passed": 84,
+    "total_failed": 0
+  }
+}

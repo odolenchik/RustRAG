@@ -7,7 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_Note: v0.7.8 through 0.7.14 are documented below._
+### Added
+- **Auto-detection of LLM model** — when `model = ""` in config or no `LLAMA_MODEL` env var is set, the server queries `/v1/models` from the configured endpoint and uses the first available model. Eliminates manual model name configuration.
+- **MCP tools: `rag_workspace_info` and `rag_file_read`** — MCP server now exposes three tools for AI coding agents: `rag_search` (semantic search over code chunks), `rag_workspace_info` (workspace structure, crate paths, dependencies from Cargo.toml), and `rag_file_read` (read any workspace file with directory traversal protection and 100KB limit).
+
+### Changed
+- **Removed `rag_query` from MCP** — the MCP server is now designed for agent-only use without external LLM calls. Agents receive raw code chunks via `rag_search` and analyze them directly. For full RAG answers with LLM, use the HTTP `/query` endpoint instead.
+- **MCP tools designed for agents without external LLM** — all three MCP tools (`rag_search`, `rag_workspace_info`, `rag_file_read`) operate entirely offline using local embeddings and file I/O. No external API calls required.
+
+### Fixed
+- **Async deadlock in `/query` endpoint** — replaced synchronous `spawn_blocking` + `block_on` pattern with async `chat_with_http_client`. The LLM call now runs natively within the axum async runtime, eliminating infinite hangs on full RAG queries. Previously caused 120+ second timeouts.
+- **POST `/search` returning "missing field 'query'"** — switched from `Query<SearchQuery>` (URL params) to `Json<SearchQueryBody>` extractor for POST requests. The endpoint now correctly parses JSON body with `{query, top_k}` payload.
 
 ## [0.7.15] - 2026-06-15
 

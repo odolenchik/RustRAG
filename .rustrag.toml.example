@@ -17,8 +17,8 @@ chunk_overlap = 3
 # Also supports Ollama's /api/chat endpoint format.
 endpoint = "http://localhost:8080"
 
-# Model name used by the LLM server.
-model = "Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-IQ3_M.gguf"
+# Model name used by the LLM server (leave empty to auto-detect from /v1/models).
+model = ""
 
 # Number of top results to return when querying (default: 5).
 top_k = 5

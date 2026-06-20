@@ -12,16 +12,22 @@ Thank you for your interest in contributing! This document covers everything you
 
 ```
 RustRag/
-├── crates/                    # Workspace crates
+├── crates/                    # Workspace crates (10 crates)
 │   ├── core/                  # rust-rag-core — Core engine (indexing, embeddings, search, semantic cache)
 │   │   └── tests/mod.rs       # 59+ test functions
-│   ├── cli/                   # rust-rag-cli — CLI binary (7 subcommands)
+│   ├── indexer/               # rust-rag-indexer — AST-aware file indexing with tree-sitter-rust
+│   ├── embedding/             # rust-rag-embedding — ONNX-based embedding computation (fastembed)
+│   ├── vector-store/          # rust-rag-vector-store — JSONL vector store + BM25 inverted index
+│   ├── callgraph/             # rust-rag-callgraph — AST-based call edge extraction
+│   ├── state/                 # rust-rag-state — Incremental indexing state management (SHA-256 hashes)
+│   ├── cli/                   # rust-rag-cli — CLI binary (9 subcommands: index, ask, chat, reindex, info, clean, symbol, stats, download)
 │   ├── server/                # rust-rag-server — HTTP API (axum) + MCP protocol, rate limiting, auth, semantic cache integration
-│   ├── llm/                   # rust-rag-llm — LLM client abstraction
-│   └── tui/                   # rust-rag-tui — Interactive terminal UI
+│   ├── llm/                   # rust-rag-llm — LLM client abstraction with endpoint validation and async support
+│   └── tui/                   # rust-rag-tui — Interactive terminal UI built on ratatui + crossterm
 ├── Download/                  # ONNX model files (gitignored)
 ├── .rustrag.toml              # Active configuration
-└── .rustrag.toml.example      # Example config template
+├── .rustrag.toml.example      # Example config template
+└── benchmarks/                # Performance benchmark results
 ```
 
 ## Getting Started
@@ -40,13 +46,15 @@ cargo build --workspace
 # All core crate tests (59+ tests: indexing, incremental state, vector store, cosine similarity, hybrid search, semantic cache)
 cargo test --package rust-rag-core
 
-# LLM validation tests (SSRF endpoint URL validation)
+# LLM validation tests (SSRF endpoint URL validation, async chat)
 cargo test --package rust-rag-llm
 
-# Server handler tests (rate limiter, auth, context trimming)
+# Server handler tests (rate limiter, auth, context trimming, search/query handlers)
 cargo test --package rust-rag-server
 
-# All workspace tests (108+ total)
+# All workspace tests (200+ total across 10 crates)
+
+# All workspace tests (200+ total)
 cargo test --workspace
 ```
 
