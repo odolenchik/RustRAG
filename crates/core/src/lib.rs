@@ -8,8 +8,8 @@ pub mod error {
     pub use rust_rag_error::*;
 }
 
-pub use rust_rag_error::{ErrorKind, RagCoreError};
 pub use rust_rag_error::wrap_core_result;
+pub use rust_rag_error::{ErrorKind, RagCoreError};
 
 // Re-export indexer types
 /// Indexer types from `rust_rag_indexer`.

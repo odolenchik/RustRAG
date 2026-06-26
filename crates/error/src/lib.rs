@@ -137,11 +137,17 @@ pub fn wrap_core_result<T>(result: Result<T, RagCoreError>) -> anyhow::Result<T>
 /// Convenience extension: wrap a `std::io::Error` as the variant-specific error.
 pub trait IoContext<T> {
     /// Wrap this `Result` by mapping its `io::Error` through the provided closure.
-    fn wrapped(self, kind: impl FnOnce(std::io::Error) -> Box<dyn std::error::Error + Send + Sync>) -> Result<T, RagCoreError>;
+    fn wrapped(
+        self,
+        kind: impl FnOnce(std::io::Error) -> Box<dyn std::error::Error + Send + Sync>,
+    ) -> Result<T, RagCoreError>;
 }
 
 impl<T> IoContext<T> for Result<T, std::io::Error> {
-    fn wrapped(self, kind: impl FnOnce(std::io::Error) -> Box<dyn std::error::Error + Send + Sync>) -> Result<T, RagCoreError> {
+    fn wrapped(
+        self,
+        kind: impl FnOnce(std::io::Error) -> Box<dyn std::error::Error + Send + Sync>,
+    ) -> Result<T, RagCoreError> {
         self.map_err(|e| (kind)(e).into())
     }
 }

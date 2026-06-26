@@ -66,16 +66,24 @@ pub enum SymbolKind {
     ImplBlock,
     /// Unsafe region.
     UnsafeRegion,
-    /// Trait implementation or trait definition.
+    /// Trait definition.
+    Trait,
+    /// Trait implementation.
     TraitImpl,
     /// Module item.
     Module,
     /// Struct definition.
     Struct,
+    /// Union definition.
+    Union,
     /// Enum definition.
     Enum,
     /// Macro definition.
     Macro,
+    /// Constant item.
+    Constant,
+    /// Static item.
+    Static,
 }
 
 impl SymbolKind {
@@ -85,11 +93,15 @@ impl SymbolKind {
             SymbolKind::Function => "function",
             SymbolKind::ImplBlock => "implblock",
             SymbolKind::UnsafeRegion => "unsaferegion",
+            SymbolKind::Trait => "trait",
             SymbolKind::TraitImpl => "traitimpl",
             SymbolKind::Module => "module",
             SymbolKind::Struct => "struct",
+            SymbolKind::Union => "union",
             SymbolKind::Enum => "enum",
             SymbolKind::Macro => "macro",
+            SymbolKind::Constant => "constant",
+            SymbolKind::Static => "static",
         }
     }
 }
@@ -208,7 +220,11 @@ fn collect_rs_files(dir: &Path, chunks: &mut Vec<Chunk>) -> Result<(), RagCoreEr
 
 /// Parse a Rust source file and extract AST-level chunks.
 #[tracing::instrument(level = "debug", skip(chunks), fields(file = %file_path.display(), content_len = content.len()))]
-pub fn parse_and_extract(content: &str, file_path: &Path, chunks: &mut Vec<Chunk>) -> Result<(), RagCoreError> {
+pub fn parse_and_extract(
+    content: &str,
+    file_path: &Path,
+    chunks: &mut Vec<Chunk>,
+) -> Result<(), RagCoreError> {
     let mut parser = tree_sitter::Parser::new();
     if let Err(e) = parser.set_language(&tree_sitter_rust::LANGUAGE.into()) {
         return Err(RagCoreError::ParseError(
@@ -220,7 +236,9 @@ pub fn parse_and_extract(content: &str, file_path: &Path, chunks: &mut Vec<Chunk
     let tree = parser.parse(content, None).ok_or_else(|| {
         RagCoreError::ParseError(
             file_path.to_path_buf(),
-            Box::new(std::io::Error::other("tree-sitter parse failed (unreachable)")),
+            Box::new(std::io::Error::other(
+                "tree-sitter parse failed (unreachable)",
+            )),
         )
     })?;
 
@@ -375,7 +393,9 @@ fn compute_nesting_depth(node: tree_sitter::Node<'_>) -> usize {
             let mut max_child = 0;
             for child in node.children(&mut node.walk()) {
                 let d = compute_nesting_depth(child);
-                if d > max_child { max_child = d; }
+                if d > max_child {
+                    max_child = d;
+                }
             }
             1 + max_child
         }
@@ -383,7 +403,9 @@ fn compute_nesting_depth(node: tree_sitter::Node<'_>) -> usize {
             let mut max_child = 0;
             for child in node.children(&mut node.walk()) {
                 let d = compute_nesting_depth(child);
-                if d > max_child { max_child = d; }
+                if d > max_child {
+                    max_child = d;
+                }
             }
             max_child
         }
@@ -394,8 +416,10 @@ fn is_atomic_kind(kind: &str) -> bool {
     matches!(
         kind,
         "macro_invocation"
-            | "use_declaration" | "use_tree"
-            | "extern_crate_declaration" | "attribute"
+            | "use_declaration"
+            | "use_tree"
+            | "extern_crate_declaration"
+            | "attribute"
     )
 }
 
@@ -558,7 +582,7 @@ fn extract_nodes(
                 line_start: node.start_byte(),
                 line_end: node.end_byte(),
                 module_name: format!("{}/trait {}", module_prefix, name),
-                symbol_kind: SymbolKind::TraitImpl,
+                symbol_kind: SymbolKind::Trait,
                 text: content[node.start_byte()..node.end_byte()].to_string(),
                 max_nesting_depth: Some(compute_nesting_depth(node)),
             });
@@ -575,7 +599,41 @@ fn extract_nodes(
                 line_start: node.start_byte(),
                 line_end: node.end_byte(),
                 module_name: format!("{}/{}", module_prefix, name),
-                symbol_kind: SymbolKind::Struct,
+                symbol_kind: SymbolKind::Union,
+                text: content[node.start_byte()..node.end_byte()].to_string(),
+                max_nesting_depth: Some(compute_nesting_depth(node)),
+            });
+        }
+        "constant_item" => {
+            let name = node
+                .child_by_field_name("name")
+                .map(|n| n.utf8_text(content.as_bytes()).unwrap_or("<anon>"))
+                .unwrap_or("<anon>")
+                .to_string();
+
+            chunks.push(Chunk {
+                file_path: file_path.to_path_buf(),
+                line_start: node.start_byte(),
+                line_end: node.end_byte(),
+                module_name: format!("{}/constant {}", module_prefix, name),
+                symbol_kind: SymbolKind::Constant,
+                text: content[node.start_byte()..node.end_byte()].to_string(),
+                max_nesting_depth: Some(compute_nesting_depth(node)),
+            });
+        }
+        "static_item" => {
+            let name = node
+                .child_by_field_name("name")
+                .map(|n| n.utf8_text(content.as_bytes()).unwrap_or("<anon>"))
+                .unwrap_or("<anon>")
+                .to_string();
+
+            chunks.push(Chunk {
+                file_path: file_path.to_path_buf(),
+                line_start: node.start_byte(),
+                line_end: node.end_byte(),
+                module_name: format!("{}/static {}", module_prefix, name),
+                symbol_kind: SymbolKind::Static,
                 text: content[node.start_byte()..node.end_byte()].to_string(),
                 max_nesting_depth: Some(compute_nesting_depth(node)),
             });
@@ -640,13 +698,18 @@ impl Counter {
         assert!(!chunks.is_empty(), "Should find at least one chunk");
 
         let has_function = chunks.iter().any(|c| c.symbol_kind == SymbolKind::Function);
-        let has_impl = chunks.iter().any(|c| c.symbol_kind == SymbolKind::ImplBlock);
+        let has_impl = chunks
+            .iter()
+            .any(|c| c.symbol_kind == SymbolKind::ImplBlock);
         assert!(has_function, "Should extract function chunk");
         assert!(has_impl, "Should extract impl block chunk");
 
         for chunk in &chunks {
             assert!(!chunk.text.is_empty(), "Chunk text should not be empty");
-            assert!(!chunk.module_name.is_empty(), "Module name should not be empty");
+            assert!(
+                !chunk.module_name.is_empty(),
+                "Module name should not be empty"
+            );
             assert!(chunk.line_start <= chunk.line_end, "line_start <= line_end");
         }
     }

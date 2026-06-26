@@ -37,12 +37,15 @@ pub struct Document {
 struct DocCacheEntry {
     mtime: u64,
     documents: Vec<serde_json::Value>,
+    /// Precomputed L2 norms of each document's embedding vector.
+    norms: Vec<f32>,
 }
 
 impl std::fmt::Debug for DocCacheEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DocCacheEntry")
             .field("documents", &"[..]")
+            .field("norms", &self.norms.len())
             .finish()
     }
 }
@@ -97,10 +100,7 @@ impl VectorStore {
     /// Set restrictive permissions (0600) on a file — used for index/cache JSONL files.
     fn restrict_file_permissions(path: &std::path::Path) {
         #[cfg(unix)]
-        if let Err(e) = std::fs::set_permissions(
-            path,
-            PermissionsExt::from_mode(0o600),
-        ) {
+        if let Err(e) = std::fs::set_permissions(path, PermissionsExt::from_mode(0o600)) {
             tracing::warn!(
                 "[warning] Failed to set file permissions on {}: {}",
                 path.display(),
@@ -112,7 +112,13 @@ impl VectorStore {
     /// Get the default `.rustrag` path inside a workspace.
     pub fn for_workspace(workspace_root: impl AsRef<std::path::Path>) -> Self {
         let dir = workspace_root.as_ref().join(".rustrag");
-        VectorStore::open(&dir).unwrap_or_else(|e| panic!("Failed to create vector store directory '{}': {}", dir.display(), e))
+        VectorStore::open(&dir).unwrap_or_else(|e| {
+            panic!(
+                "Failed to create vector store directory '{}': {}",
+                dir.display(),
+                e
+            )
+        })
     }
 
     /// Insert documents into the vector store.
@@ -218,19 +224,45 @@ impl VectorStore {
         let documents: Vec<serde_json::Value> = content
             .lines()
             .filter(|line| !line.trim().is_empty())
-            .map(|line| serde_json::from_str::<serde_json::Value>(line).map_err(|e| {
-                RagCoreError::VectorStore(
-                    format!("parse JSON on line: {}", e),
-                    Box::new(std::io::Error::other(e)),
-                )
-            }))
+            .map(|line| {
+                serde_json::from_str::<serde_json::Value>(line).map_err(|e| {
+                    RagCoreError::VectorStore(
+                        format!("parse JSON on line: {}", e),
+                        Box::new(std::io::Error::other(e)),
+                    )
+                })
+            })
             .collect::<Result<Vec<_>, _>>()?;
 
         if let Some(mtime) = current_mtime {
             let mut cache = self.cache.write().unwrap();
+            let mut norms = Vec::with_capacity(documents.len());
+            for doc in &documents {
+                let norm = if let Some(embedding) = doc.get("embedding") {
+                    if let Some(embed_arr) = embedding.as_array() {
+                        let embed_f32: Vec<f32> = embed_arr
+                            .iter()
+                            .filter_map(|v| v.as_f64())
+                            .map(|f| f as f32)
+                            .collect();
+                        if embed_f32.is_empty() {
+                            0.0
+                        } else {
+                            let sum_sq: f32 = embed_f32.iter().map(|&x| x * x).sum();
+                            sum_sq.sqrt()
+                        }
+                    } else {
+                        0.0
+                    }
+                } else {
+                    0.0
+                };
+                norms.push(norm);
+            }
             *cache = Some(DocCacheEntry {
                 mtime,
                 documents: documents.clone(),
+                norms,
             });
         }
 
@@ -284,9 +316,33 @@ impl VectorStore {
         pure_vector: bool,
     ) -> Result<Vec<SearchResult>, RagCoreError> {
         let documents = self.load_documents()?;
-
         if documents.is_empty() {
             return Ok(Vec::new());
+        }
+
+        // Calculate norms from documents to avoid double loading
+        let mut norms = Vec::with_capacity(documents.len());
+        for doc in &documents {
+            let norm = if let Some(embedding) = doc.get("embedding") {
+                if let Some(embed_arr) = embedding.as_array() {
+                    let embed_f32: Vec<f32> = embed_arr
+                        .iter()
+                        .filter_map(|v| v.as_f64())
+                        .map(|f| f as f32)
+                        .collect();
+                    if embed_f32.is_empty() {
+                        0.0
+                    } else {
+                        let sum_sq: f32 = embed_f32.iter().map(|&x| x * x).sum();
+                        sum_sq.sqrt()
+                    }
+                } else {
+                    0.0
+                }
+            } else {
+                0.0
+            };
+            norms.push(norm);
         }
 
         let (inverted, doc_stats) = self.get_bm25_cache(&documents)?;
@@ -299,7 +355,7 @@ impl VectorStore {
 
         let query_mag = cosine_similarity(query_vec, query_vec).abs().max(1e-10);
 
-        type DocScore = (f64, f32, usize);
+        type DocScore = (f64, f32, f64, usize);
         let mut scored: Vec<DocScore> = Vec::new();
 
         for (idx, doc) in documents.iter().enumerate() {
@@ -312,7 +368,17 @@ impl VectorStore {
                         .filter_map(|v| v.as_f64())
                         .map(|f| f as f32)
                         .collect();
-                    cosine_similarity_with_precomputed(query_vec, query_mag, &embed_f32)
+                    if embed_f32.is_empty() {
+                        0.0
+                    } else {
+                        let dot: f32 = query_vec.iter().zip(embed_f32.iter()).map(|(q, e)| q * e).sum();
+                        let doc_norm = norms[idx];
+                        if doc_norm == 0.0 || query_mag == 0.0 {
+                            0.0
+                        } else {
+                            dot / (query_mag * doc_norm)
+                        }
+                    }
                 } else {
                     0.0
                 }
@@ -350,17 +416,20 @@ impl VectorStore {
             };
 
             let combined = alpha * vec_score_val as f64 + (1.0 - alpha) * bm25_normalized;
-            scored.push((combined, vec_score_val, idx));
+            scored.push((combined, vec_score_val, bm25_val, idx));
         }
 
-        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        // Partial sort to get top-k
+        if scored.len() <= top_k {
+            scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        } else {
+            scored.select_nth_unstable_by(top_k, |a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+            scored.truncate(top_k);
+            scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        }
 
         let mut results: Vec<SearchResult> = Vec::new();
-        for (_, vec_sim, idx) in scored {
-            if results.len() >= top_k {
-                break;
-            }
-
+        for (_, vec_sim, bm25_val, idx) in scored {
             let doc = &documents[idx];
 
             if let Some(flt) = filters {
@@ -382,11 +451,32 @@ impl VectorStore {
                     "struct" => Some(SymbolKind::Struct),
                     "enum" => Some(SymbolKind::Enum),
                     "macro" => Some(SymbolKind::Macro),
-                    _other => return Err(RagCoreError::UnknownSymbolKind(
-                        s.to_string(), doc_id_for_err.clone(), file_path_for_err.clone())),
+                    _other => {
+                        return Err(RagCoreError::UnknownSymbolKind(
+                            s.to_string(),
+                            doc_id_for_err.clone(),
+                            file_path_for_err.clone(),
+                        ))
+                    }
                 },
                 None => None,
             };
+
+            // Calculate confidence score based on:
+            // 1. Normalized combined score (higher score = higher confidence)
+            // 2. Agreement between vector and BM25 scores when both available
+            let mut confidence = vec_sim.clamp(0.0, 1.0); // Base confidence from normalized score
+
+            // If we have both vector and BM25 scores, boost confidence when they agree
+            if let (Some(vector_score), Some(bm25_score)) = (Some(vec_sim), Some(bm25_val as f32)) {
+                // Calculate agreement (1.0 - normalized difference)
+                let diff = (vector_score - bm25_score).abs();
+                let agreement = 1.0 - diff.clamp(0.0, 1.0);
+                // Boost confidence by up to 0.2 based on agreement
+                confidence = confidence + (agreement * 0.2);
+                // Ensure confidence stays in [0, 1] range
+                confidence = confidence.clamp(0.0, 1.0);
+            }
 
             results.push(SearchResult {
                 id: doc["id"].as_str().unwrap_or("").to_string(),
@@ -397,6 +487,9 @@ impl VectorStore {
                 symbol_kind,
                 text: doc["text"].as_str().unwrap_or("").to_string(),
                 score: vec_sim,
+                vector_score: Some(vec_sim),
+                bm25_score: Some(bm25_val as f32),
+                confidence,
             });
         }
 
@@ -541,7 +634,7 @@ pub struct SearchFilters {
     /// Filter to only include documents from files with this extension (e.g., "rs").
     pub file_extension: Option<String>,
     /// Filter to only include documents of this symbol kind.
-    pub symbol_kind: Option<SymbolKind>,
+    pub symbol_kind: Option<String>,
 }
 
 impl SearchFilters {
@@ -556,9 +649,17 @@ impl SearchFilters {
                 return false;
             }
         }
-        if let Some(kind) = &self.symbol_kind {
-            let stored = doc.get("symbol_kind").and_then(|v| v.as_str());
-            if stored.map(|s| s.to_lowercase()) != Some(kind.as_str().to_lowercase()) {
+        if let Some(kind_str) = &self.symbol_kind {
+            let stored_kind_str = doc.get("symbol_kind").and_then(|v| v.as_str()).unwrap_or("");
+            let stored_kind = match parse_symbol_kind(stored_kind_str) {
+                Ok(k) => k,
+                Err(_) => return false, // Invalid stored symbol kind
+            };
+            let filter_kind = match parse_symbol_kind(kind_str) {
+                Ok(k) => k,
+                Err(_) => return false, // Invalid filter symbol kind
+            };
+            if stored_kind != filter_kind {
                 return false;
             }
         }
@@ -570,7 +671,17 @@ impl SearchFilters {
 // SearchResult with custom deserializer for SymbolKind
 // ---------------------------------------------------------------------------
 
-fn parse_symbol_kind(s: &str) -> Result<SymbolKind, RagCoreError> {
+/// Parse a string into a SymbolKind enum.
+///
+/// # Arguments
+///
+/// * `s` - String representation of symbol kind (e.g., "function", "struct")
+///
+/// # Returns
+///
+/// * `Ok(SymbolKind)` if parsing succeeds
+/// * `Err(RagCoreError::UnknownSymbolKind)` if parsing fails
+pub fn parse_symbol_kind(s: &str) -> Result<SymbolKind, RagCoreError> {
     match s.to_lowercase().as_str() {
         "function" => Ok(SymbolKind::Function),
         "implblock" => Ok(SymbolKind::ImplBlock),
@@ -581,7 +692,9 @@ fn parse_symbol_kind(s: &str) -> Result<SymbolKind, RagCoreError> {
         "enum" => Ok(SymbolKind::Enum),
         "macro" => Ok(SymbolKind::Macro),
         other => Err(RagCoreError::UnknownSymbolKind(
-            other.to_string(), String::new(), String::new(),
+            other.to_string(),
+            String::new(),
+            String::new(),
         )),
     }
 }
@@ -603,8 +716,15 @@ pub struct SearchResult {
     pub symbol_kind: Option<SymbolKind>,
     /// Source text snippet.
     pub text: String,
-    /// Cosine similarity score from embedding search.
+    /// Combined score from hybrid search (alpha * vector + (1-alpha) * BM25).
     pub score: f32,
+    /// Vector similarity score (cosine similarity).
+    pub vector_score: Option<f32>,
+    /// BM25 text score.
+    pub bm25_score: Option<f32>,
+    /// Confidence score indicating reliability of the result (0.0-1.0).
+    /// Higher values indicate greater confidence in the result's relevance.
+    pub confidence: f32,
 }
 
 impl<'de> Deserialize<'de> for SearchResult {
@@ -622,6 +742,9 @@ impl<'de> Deserialize<'de> for SearchResult {
             symbol_kind: Option<String>,
             text: String,
             score: f32,
+            vector_score: Option<f32>,
+            bm25_score: Option<f32>,
+            confidence: Option<f32>,
         }
 
         let helper = SearchResultHelper::deserialize(deserializer)?;
@@ -637,6 +760,9 @@ impl<'de> Deserialize<'de> for SearchResult {
             },
             text: helper.text,
             score: helper.score,
+            vector_score: helper.vector_score,
+            bm25_score: helper.bm25_score,
+            confidence: helper.confidence.unwrap_or(0.0),
         })
     }
 }
@@ -711,7 +837,9 @@ mod tests {
         let (_dir, store) = make_test_vector_store();
 
         let query_vec: Vec<f32> = vec![1.0; 384];
-        let results = store.search_by_embedding(&query_vec, 5).expect("should search");
+        let results = store
+            .search_by_embedding(&query_vec, 5)
+            .expect("should search");
 
         assert_eq!(results.len(), 1);
         let result = &results[0];
@@ -726,7 +854,9 @@ mod tests {
         let store = VectorStore::open(dir.path()).expect("should create empty store");
 
         let query_vec: Vec<f32> = vec![1.0; 384];
-        let results = store.search_by_embedding(&query_vec, 5).expect("should search");
+        let results = store
+            .search_by_embedding(&query_vec, 5)
+            .expect("should search");
         assert!(results.is_empty());
     }
 

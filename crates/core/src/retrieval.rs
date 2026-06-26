@@ -55,6 +55,14 @@ pub fn retrieve_from_chunks(
         .take(top_k)
         .map(|(score, chunk_idx)| {
             let chunk = &chunks[chunk_idx];
+
+            // Calculate confidence score for in-memory chunks
+            // Base confidence from normalized score (assuming scores are in reasonable range)
+            let confidence = score.clamp(0.0, 1.0);
+
+            // For in-memory chunks, we only have vector score, so set BM25 to None
+            // No agreement boost possible since we don't have BM25 score
+
             SearchResult {
                 id: format!("chunk_{}", chunk.file_path.to_string_lossy()),
                 file_path: chunk.file_path.clone(),
@@ -64,6 +72,9 @@ pub fn retrieve_from_chunks(
                 symbol_kind: Some(chunk.symbol_kind.clone()),
                 text: chunk.text.clone(),
                 score,
+                vector_score: Some(score),
+                bm25_score: None,
+                confidence,
             }
         })
         .collect();
@@ -72,7 +83,11 @@ pub fn retrieve_from_chunks(
 }
 
 /// Hybrid retrieval combining vector similarity with call graph proximity.
-#[tracing::instrument(level = "info", skip(chunks, _graph, _name_to_index), fields(query, top_k))]
+#[tracing::instrument(
+    level = "info",
+    skip(chunks, _graph, _name_to_index),
+    fields(query, top_k)
+)]
 pub fn retrieve_hybrid(
     query: &str,
     chunks: &[Chunk],

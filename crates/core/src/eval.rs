@@ -2,7 +2,6 @@
 ///
 /// Provides Mean Reciprocal Rank (MRR) and hit-rate metrics that measure how
 /// well the retriever surfaces relevant chunks relative to ground-truth labels.
-
 use crate::vector_store::SearchResult;
 use std::path::PathBuf;
 
@@ -175,9 +174,12 @@ pub fn chunk_diagnostics(chunks: &[crate::indexer::Chunk]) -> ChunkDiagnostics {
         std::collections::HashMap::new();
 
     for chunk in chunks {
-        kinds.entry(chunk.symbol_kind_name().to_string())
+        kinds
+            .entry(chunk.symbol_kind_name().to_string())
             .or_default();
-        *kinds.entry(chunk.symbol_kind_name().to_string()).or_default() += 1;
+        *kinds
+            .entry(chunk.symbol_kind_name().to_string())
+            .or_default() += 1;
 
         let lines_in_chunk = chunk.line_end.saturating_sub(chunk.line_start);
         line_lengths.push(lines_in_chunk);
@@ -186,7 +188,8 @@ pub fn chunk_diagnostics(chunks: &[crate::indexer::Chunk]) -> ChunkDiagnostics {
             has_separator_count += 1;
         }
 
-        files.entry(chunk.file_path.clone())
+        files
+            .entry(chunk.file_path.clone())
             .or_default()
             .push(chunk);
     }
@@ -225,13 +228,15 @@ pub fn chunk_diagnostics(chunks: &[crate::indexer::Chunk]) -> ChunkDiagnostics {
         percentile_50(&overlaps)
     };
 
-    let avg_lines: f64 = line_lengths.iter().map(|&l| l as f64).sum::<f64>() / line_lengths.len() as f64;
+    let avg_lines: f64 =
+        line_lengths.iter().map(|&l| l as f64).sum::<f64>() / line_lengths.len() as f64;
 
     // ── Nesting-depth diagnostics ──
     let mut max_nesting_per_file: std::collections::HashMap<String, usize> =
         std::collections::HashMap::new();
     let mut nesting_depths: Vec<usize> = Vec::with_capacity(chunks.len());
-    let mut files_with_nested: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    let mut files_with_nested: std::collections::HashSet<PathBuf> =
+        std::collections::HashSet::new();
 
     for chunk in chunks {
         if let Some(d) = chunk.max_nesting_depth {
@@ -308,6 +313,9 @@ mod tests {
             symbol_kind: Some(crate::indexer::SymbolKind::Function),
             text: format!("fn {}() {{}}", id.replace('_', "-")),
             score,
+            vector_score: Some(score),
+            bm25_score: None,
+            confidence: score.clamp(0.0, 1.0),
         }
     }
 
@@ -321,10 +329,7 @@ mod tests {
         // Retrieval function that always returns the relevant chunk first
         let results = |query: &str, _top_k: usize| -> Vec<SearchResult> {
             if query == "find foo" {
-                vec![
-                    mock_result("chunk_foo", 0.9),
-                    mock_result("chunk_bar", 0.5),
-                ]
+                vec![mock_result("chunk_foo", 0.9), mock_result("chunk_bar", 0.5)]
             } else {
                 vec![]
             }
@@ -356,7 +361,10 @@ mod tests {
         let report = evaluate_mrr(&labels, 10, results);
         assert_eq!(report.query_count, 1);
         // Relevant chunk not in top_k → RR = 0
-        assert!(report.mrr < 1e-9, "MRR should be ~0 when irrelevant result returned");
+        assert!(
+            report.mrr < 1e-9,
+            "MRR should be ~0 when irrelevant result returned"
+        );
         assert_eq!(report.hits, 0);
     }
 
@@ -492,5 +500,4 @@ mod tests {
             "Should report implblock kind"
         );
     }
-
-  }
+}

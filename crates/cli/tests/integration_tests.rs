@@ -135,12 +135,22 @@ fn test_e2e_index_and_search() {
 
     let (search_results, _context) = results.unwrap();
     // Should find at least one result containing the `add` or `multiply` function.
-    assert!(!search_results.is_empty(), "should return search results for a known query");
+    assert!(
+        !search_results.is_empty(),
+        "should return search results for a known query"
+    );
 
     // Verify that the returned chunks reference valid files within our workspace.
-    let file_paths: Vec<_> = search_results.iter().map(|r| r.file_path.display().to_string()).collect();
+    let file_paths: Vec<_> = search_results
+        .iter()
+        .map(|r| r.file_path.display().to_string())
+        .collect();
     let has_src_file = file_paths.iter().any(|p| p.contains("lib.rs"));
-    assert!(has_src_file, "should find chunks in lib.rs files; got {:?}", file_paths);
+    assert!(
+        has_src_file,
+        "should find chunks in lib.rs files; got {:?}",
+        file_paths
+    );
 }
 
 // =========================================================================== //
@@ -162,15 +172,16 @@ fn test_incremental_index_adds_new_module() {
 
     // Verify initial state: should have chunks from lib.rs only.
     {
-        let results = rust_rag::run_retrieval_pipeline(
-            "special compute",
-            Some(dir.path().to_str().unwrap()),
-        );
+        let results =
+            rust_rag::run_retrieval_pipeline("special compute", Some(dir.path().to_str().unwrap()));
         assert!(results.is_ok(), "first pass retrieval succeeded");
         // No `special_compute` chunk yet — query should not find it.
         let (results, _) = results.unwrap();
         let found = results.iter().any(|r| r.text.contains("special_compute"));
-        assert!(!found, "should NOT have special_compute before second index");
+        assert!(
+            !found,
+            "should NOT have special_compute before second index"
+        );
     }
 
     // Now add a new file with `special_compute` function.
@@ -198,7 +209,10 @@ pub fn double_value(n: u64) -> u64 {
         assert!(results.is_ok(), "second pass retrieval succeeded");
         let (results, _context) = results.unwrap();
         let found = results.iter().any(|r| r.text.contains("special_compute"));
-        assert!(found, "should now find special_compute after incremental index added new_mod.rs");
+        assert!(
+            found,
+            "should now find special_compute after incremental index added new_mod.rs"
+        );
     }
 }
 
@@ -239,15 +253,18 @@ fn test_hybrid_search_ranking_order() {
         // Note: with cosine similarity on real embeddings, the exact keyword match
         // may vary — but we expect at least one chunk referencing multiplication.
         let any_result_has_mult = search_results.iter().any(|r| {
-            r.text.contains("multiply")
-                || r.text.contains("double")
-                || r.text.contains("*")
+            r.text.contains("multiply") || r.text.contains("double") || r.text.contains("*")
         });
 
         assert!(
             has_relevant_keyword || any_result_has_mult,
             "top-ranked chunk should be relevant to multiply query; top_text={}",
-            &search_results[0].text[..search_results[0].text.chars().take(80).collect::<String>().len()]
+            &search_results[0].text[..search_results[0]
+                .text
+                .chars()
+                .take(80)
+                .collect::<String>()
+                .len()]
         );
     }
 }
@@ -279,7 +296,10 @@ fn test_ask_pipeline_builds_context() {
 
     let (_results, context) = result.unwrap();
     // Context should contain at least one reference to the file path.
-    assert!(!context.is_empty(), "should have non-empty context from retrieval");
+    assert!(
+        !context.is_empty(),
+        "should have non-empty context from retrieval"
+    );
 }
 
 // =========================================================================== //
@@ -442,7 +462,10 @@ pub fn delta() -> i32 { 4 }"#;
 
     // The context should now contain references to the extra code.
     let (_results, context) = result.unwrap();
-    assert!(!context.is_empty(), "reindexed workspace has retrievable content");
+    assert!(
+        !context.is_empty(),
+        "reindexed workspace has retrievable content"
+    );
 }
 
 // =========================================================================== //

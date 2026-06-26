@@ -768,9 +768,7 @@ pub fn show_stats(workspace_path: Option<&str>, json_output: bool) -> Result<()>
                 module_name,
                 symbol_kind,
                 text,
-                max_nesting_depth: value["max_nesting_depth"]
-                    .as_u64()
-                    .map(|v| v as usize),
+                max_nesting_depth: value["max_nesting_depth"].as_u64().map(|v| v as usize),
             });
         }
     }
@@ -806,7 +804,10 @@ pub fn show_stats(workspace_path: Option<&str>, json_output: bool) -> Result<()>
             "  Median overlap between adjacent chunks: {:.0}",
             diags.median_overlap_between_chunks
         );
-        println!("  Chunks with parent context (overlap separator): {}", diags.chunks_with_parent_context);
+        println!(
+            "  Chunks with parent context (overlap separator): {}",
+            diags.chunks_with_parent_context
+        );
 
         if !diags.kinds_breakdown.is_empty() {
             println!("\n  Symbol kind breakdown:");

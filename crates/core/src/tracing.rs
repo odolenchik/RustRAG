@@ -1,3 +1,4 @@
+use tracing_subscriber::prelude::*;
 /// Tracing initialisation for rust-rag.
 ///
 /// Call `init()` once at application startup (e.g. from the CLI binary).
@@ -7,9 +8,7 @@
 /// - Attaches each span's timing via `tracing::instrument`, so callers can
 ///   measure latency of indexing / retrieval / embedding / LLM calls without
 ///   code changes — just read the JSON logs and feed them to Grafana / Prometheus.
-
 use tracing_subscriber::{EnvFilter, Registry};
-use tracing_subscriber::prelude::*;
 
 /// Initialise the global `tracing` subscriber once at application startup.
 ///
@@ -26,9 +25,7 @@ pub fn init() {
 
     let filter = EnvFilter::try_from_default_env()
         .or_else(|_| EnvFilter::try_new("info"))
-        .unwrap_or_else(|_| {
-            EnvFilter::new("warn,tracing::span=warn")
-        });
+        .unwrap_or_else(|_| EnvFilter::new("warn,tracing::span=warn"));
 
     let subscriber = Registry::default().with(filter).with(fmt_layer);
 

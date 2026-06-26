@@ -12,6 +12,9 @@ use axum::{
 use futures_util::StreamExt;
 use rust_rag_core::{semantic_cache::SemanticCache, vector_store::VectorStore};
 use rust_rag_llm::ChatBackend;
+use url::Url;
+use std::io::BufRead;
+use std::net::{ToSocketAddrs, SocketAddr};
 
 // logging handled by tracing crate (already imported via #[tracing::instrument])
 use serde::Deserialize;
@@ -68,7 +71,12 @@ impl RateLimiter {
     pub fn resolve_key(headers: &axum::http::HeaderMap, fallback: &str) -> String {
         // Prefer explicit proxy headers for correctness behind load balancers.
         if let Some(forwarded) = headers.get("X-Forwarded-For").and_then(|h| h.to_str().ok()) {
-            return forwarded.split(',').next().unwrap_or(fallback).trim().to_string();
+            return forwarded
+                .split(',')
+                .next()
+                .unwrap_or(fallback)
+                .trim()
+                .to_string();
         }
         if let Some(real_ip) = headers.get("X-Real-Ip").and_then(|h| h.to_str().ok()) {
             return real_ip.trim().to_string();
@@ -156,19 +164,29 @@ impl AppState {
         // Priority 3: auto-detect from LLM server's /v1/models endpoint.
         let normalized_endpoint = if endpoint.starts_with("http") {
             // Strip path, keep only origin (e.g. http://localhost:8080/chat/completions → http://localhost:8080)
-            endpoint.trim_end_matches('/').trim_end_matches("/chat/completions").trim_end_matches("/v1/chat/completions").to_string()
+            endpoint
+                .trim_end_matches('/')
+                .trim_end_matches("/chat/completions")
+                .trim_end_matches("/v1/chat/completions")
+                .to_string()
         } else {
             format!("http://{}/v1/models", endpoint)
         };
 
-        if let Ok(client) = reqwest::blocking::Client::builder().timeout(std::time::Duration::from_secs(3)).build() {
+        if let Ok(client) = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(3))
+            .build()
+        {
             if let Ok(resp) = client.get(&normalized_endpoint).send() {
                 if resp.status().is_success() {
                     if let Ok(json) = resp.json::<serde_json::Value>() {
                         if let Some(models) = json["data"].as_array() {
                             if let Some(first_model) = models.first() {
                                 if let Some(name) = first_model.get("id").and_then(|v| v.as_str()) {
-                                    tracing::info!("Auto-detected LLM model from /v1/models: {}", name);
+                                    tracing::info!(
+                                        "Auto-detected LLM model from /v1/models: {}",
+                                        name
+                                    );
                                     return name.to_string();
                                 }
                             }
@@ -190,25 +208,72 @@ impl AppState {
     }
 
     /// Build a shared `reqwest::Client` with connection pooling and production-ready timeouts.
-    fn build_http_client() -> Arc<reqwest::Client> {
+    /// If SSRF strict mode is enabled (via RUSRAG_SSRF_STRICT), validates that the endpoint
+    /// does not resolve to a private or link-local IP address.
+    fn build_http_client(endpoint: &str) -> Result<Arc<reqwest::Client>, anyhow::Error> {
         // SSRF strict mode: reject private IPs instead of merely warning (env: RUSRAG_SSRF_STRICT=1).
-        #[allow(unused_variables)]
         let strict_mode = std::env::var("RUSRAG_SSRF_STRICT").is_ok_and(|v| !v.is_empty());
 
-        Arc::new(
-            reqwest::Client::builder()
-                .pool_max_idle_per_host(10)
-                // Timeout for the entire HTTP request (connect + TLS + send + receive).
-                // This prevents a single LLM call from hanging forever.
-                .timeout(std::time::Duration::from_secs(300))
-                // Per-connection read timeout — no chunk should take longer than 60s to arrive.
-                .read_timeout(std::time::Duration::from_secs(60))
-                // Limit redirects to prevent redirect-based SSRF attacks (max 5 hops).
-                .redirect(reqwest::redirect::Policy::limited(5))
-                .build()
-                .expect("Failed to create HTTP client"),
-        )
+        if strict_mode {
+            Self::check_ssrf_strict(endpoint)?;
+        }
+
+        let client = reqwest::Client::builder()
+            .pool_max_idle_per_host(10)
+            // Timeout for the entire HTTP request (connect + TLS + send + receive).
+            // This prevents a single LLM call from hanging forever.
+            .timeout(std::time::Duration::from_secs(300))
+            // Per-connection read timeout — no chunk should take longer than 60s to arrive.
+            .read_timeout(std::time::Duration::from_secs(60))
+            // Limit redirects to prevent redirect-based SSRF attacks (max 5 hops).
+            .redirect(reqwest::redirect::Policy::limited(5))
+            .build()?;
+
+        Ok(Arc::new(client))
     }
+
+    fn extract_host(endpoint: &str) -> Result<String, anyhow::Error> {
+        // Parse the endpoint as a URL to get the host.
+        let url = Url::parse(endpoint)?;
+        Ok(url.host_str().unwrap_or("").to_string())
+    }
+
+    fn check_ssrf_strict(endpoint: &str) -> Result<(), anyhow::Error> {
+        let host = Self::extract_host(endpoint)?;
+        // If the host is empty, we cannot check.
+        if host.is_empty() {
+            return Ok(());
+        }
+
+        // Look up IP addresses for the host.
+        let ips = host.to_socket_addrs()?;
+        for ip in ips {
+            match ip {
+                SocketAddr::V4(ipv4) => {
+                    if ipv4.ip().is_private() {
+                        return Err(anyhow::anyhow!(
+                            "SSRF strict mode: resolved IPv4 address {} is private",
+                            ipv4
+                        ));
+                    }
+                }
+                SocketAddr::V6(ipv6) => {
+                    // Check for unique local (fc00::/7), link-local (fe80::/10), and loopback (::1).
+                    if ipv6.ip().is_unicast_link_local()
+                        || ipv6.ip().is_unique_local()
+                        || ipv6.ip().is_loopback()
+                    {
+                        return Err(anyhow::anyhow!(
+                            "SSRF strict mode: resolved IPv6 address {} is local/link-local/unique local",
+                            ipv6
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
 
     /// Resolve max context size from env override, config file, or default.
     fn resolve_max_context_size() -> usize {
@@ -219,7 +284,11 @@ impl AppState {
                 rust_rag_core::config::Config::find()
                     .ok()
                     .as_ref()
-                    .map(|c| c.llm_config().max_context_size.unwrap_or(DEFAULT_MAX_CONTEXT_SIZE))
+                    .map(|c| {
+                        c.llm_config()
+                            .max_context_size
+                            .unwrap_or(DEFAULT_MAX_CONTEXT_SIZE)
+                    })
             })
             .unwrap_or(DEFAULT_MAX_CONTEXT_SIZE)
     }
@@ -233,18 +302,18 @@ impl AppState {
             .unwrap_or_else(|| {
                 config
                     .as_ref()
-                    .and_then(|c| c.semantic_cache_config().enabled.then_some(c.semantic_cache_config().enabled))
+                    .and_then(|c| {
+                        c.semantic_cache_config()
+                            .enabled
+                            .then_some(c.semantic_cache_config().enabled)
+                    })
                     .unwrap_or(false)
             });
 
         let ttl = std::env::var("RUSRAG_SEMANTIC_CACHE_TTL")
             .ok()
             .and_then(|v| v.parse().ok())
-            .or_else(|| {
-                config
-                    .as_ref()
-                    .map(|c| c.semantic_cache_config().ttl_secs)
-            });
+            .or_else(|| config.as_ref().map(|c| c.semantic_cache_config().ttl_secs));
 
         if env_enabled {
             Arc::new(SemanticCache::open(rustrag_dir, ttl))
@@ -268,7 +337,7 @@ impl AppState {
         Ok(Self {
             store: std::sync::Arc::new(store),
             rate_limiter: Arc::new(RateLimiter::new(rate_limit_per_min)),
-            http_client: Self::build_http_client(),
+            http_client: Self::build_http_client(&endpoint)?,
             llm_endpoint: endpoint.clone(),
             llm_model: Self::resolve_model(&endpoint),
             api_key: Self::resolve_api_key(),
@@ -284,7 +353,7 @@ impl AppState {
         Ok(Self {
             store: std::sync::Arc::new(store),
             rate_limiter: Arc::new(RateLimiter::new(rate_limit_per_min)),
-            http_client: Self::build_http_client(),
+            http_client: Self::build_http_client(&endpoint)?,
             llm_endpoint: endpoint.clone(),
             llm_model: Self::resolve_model(&endpoint),
             api_key: Self::resolve_api_key(),
@@ -427,9 +496,16 @@ async fn handler_not_found() -> (StatusCode, &'static str) {
 /// GET /status — returns index metadata (no sensitive paths exposed).
 #[tracing::instrument(level = "info", skip_all, fields(path = "/status"))]
 async fn status_handler(state: axum::extract::State<AppState>) -> JsonResponse<serde_json::Value> {
-    let content =
-        std::fs::read_to_string(state.0.store.path.join("index.jsonl")).unwrap_or_default();
-    let total_chunks = content.lines().filter(|l| !l.trim().is_empty()).count();
+    let file_path = state.0.store.path.join("index.jsonl");
+    let total_chunks = match std::fs::File::open(file_path) {
+        Ok(file) => {
+            let reader = std::io::BufReader::new(file);
+            reader.lines().filter(|line| {
+                line.as_ref().map(|l| !l.trim().is_empty()).unwrap_or(false)
+            }).count()
+        }
+        Err(_) => 0,
+    };
 
     JsonResponse(serde_json::json!({
         "total_chunks": total_chunks,
@@ -469,18 +545,17 @@ async fn search_handler(
         );
     }
 
-    let query_embedding = match rust_rag_core::embedding::embed(&params.query) {
-        Ok(v) => v,
-        Err(e) => {
-            return (
+    let query_embedding =
+        match rust_rag_core::embedding::embed(&params.query) {
+            Ok(v) => v,
+            Err(e) => return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 serde_json::to_string(
                     &serde_json::json!({"error": format!("Embed failed: {}", sanitize_error(&e))}),
                 )
                 .unwrap(),
-            )
-        }
-    };
+            ),
+        };
 
     let results =
         state
@@ -496,8 +571,10 @@ async fn search_handler(
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                serde_json::to_string(&serde_json::json!({"error": format!("Search failed: {}", sanitize_error(&e))}))
-                    .unwrap(),
+                serde_json::to_string(
+                    &serde_json::json!({"error": format!("Search failed: {}", sanitize_error(&e))}),
+                )
+                .unwrap(),
             )
         }
     }
@@ -551,36 +628,34 @@ async fn query_handler(
         );
     }
 
-    let query_embedding = match rust_rag_core::embedding::embed(&body.question) {
-        Ok(v) => v,
-        Err(e) => {
-            return (
+    let query_embedding =
+        match rust_rag_core::embedding::embed(&body.question) {
+            Ok(v) => v,
+            Err(e) => return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 serde_json::to_string(
                     &serde_json::json!({"error": format!("Embed failed: {}", sanitize_error(&e))}),
                 )
                 .unwrap(),
-            )
-        }
-    };
+            ),
+        };
 
     let results = state
         .0
         .store
         .hybrid_search(&query_embedding, &body.question, top_k, 0.7, None);
 
-    let results_vec: Vec<_> = match results {
-        Ok(r) => r,
-        Err(e) => {
-            return (
+    let results_vec: Vec<_> =
+        match results {
+            Ok(r) => r,
+            Err(e) => return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 serde_json::to_string(
                     &serde_json::json!({"error": format!("Search failed: {}", sanitize_error(&e))}),
                 )
                 .unwrap(),
-            )
-        }
-    };
+            ),
+        };
 
     // Build context from search results and trim to max_context_size
     let raw_context: String = results_vec
@@ -617,7 +692,9 @@ async fn query_handler(
 
     // On successful LLM response, write back to semantic cache for future lookups.
     if was_ok {
-        let _ = state.semantic_cache.write_back(&body.question, &answer_text);
+        let _ = state
+            .semantic_cache
+            .write_back(&body.question, &answer_text);
     }
 
     let citations: Vec<_> = results_vec
@@ -770,33 +847,30 @@ async fn query_stream_handler(
                 http_client,
             );
             // Timeout the entire streaming call — prevents leaked SSE connections.
-            if tokio::time::timeout(
-                std::time::Duration::from_secs(300),
-                async {
-                    let mut stream = client.complete_stream_chunks(system_prompt, &user_message);
-                    while let Some(chunk) = stream.next().await {
-                        match chunk {
-                            Ok(text) => {
-                                // Append to the full answer buffer (single-writer, safe).
-                                if let Ok(mut buf) = full_answer.write() {
-                                    buf.push_str(&text);
-                                }
-                                let sse = format!("data: {}\n\n", text);
-                                let _ = tx_clone
-                                    .send(Ok(bytes::Bytes::from(sse.into_bytes())))
-                                    .await;
+            if tokio::time::timeout(std::time::Duration::from_secs(300), async {
+                let mut stream = client.complete_stream_chunks(system_prompt, &user_message);
+                while let Some(chunk) = stream.next().await {
+                    match chunk {
+                        Ok(text) => {
+                            // Append to the full answer buffer (single-writer, safe).
+                            if let Ok(mut buf) = full_answer.write() {
+                                buf.push_str(&text);
                             }
-                            Err(e) => {
-                                let err_sse = format!("event: error\ndata: {}\n\n", e);
-                                let _ = tx_clone
-                                    .send(Ok(bytes::Bytes::from(err_sse.into_bytes())))
-                                    .await;
-                                break;
-                            }
+                            let sse = format!("data: {}\n\n", text);
+                            let _ = tx_clone
+                                .send(Ok(bytes::Bytes::from(sse.into_bytes())))
+                                .await;
+                        }
+                        Err(e) => {
+                            let err_sse = format!("event: error\ndata: {}\n\n", e);
+                            let _ = tx_clone
+                                .send(Ok(bytes::Bytes::from(err_sse.into_bytes())))
+                                .await;
+                            break;
                         }
                     }
-                },
-            )
+                }
+            })
             .await
             .is_err()
             {

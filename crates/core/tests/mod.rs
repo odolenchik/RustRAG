@@ -158,7 +158,7 @@ fn test_vector_store_multi_document_ranking() {
         module_name: "mod_a".into(),
         symbol_kind: SymbolKind::Function,
         text: "fn alpha() -> i32 { 42 }".to_string(),
-                max_nesting_depth: None,
+        max_nesting_depth: None,
     };
 
     // Doc 2: embedding with low values in first half, high in second (opposite pattern)
@@ -169,7 +169,7 @@ fn test_vector_store_multi_document_ranking() {
         module_name: "mod_b".into(),
         symbol_kind: SymbolKind::ImplBlock,
         text: "impl MyStruct { fn beta(&self) {} }".to_string(),
-                max_nesting_depth: None,
+        max_nesting_depth: None,
     };
 
     // Query vector matches doc_a pattern (high first half, low second half)
@@ -455,7 +455,7 @@ impl InvertedIndex {
                     module_name: "init_embedding_model".into(),
                     symbol_kind: SymbolKind::Function,
                     text: doc_a_text.to_string(),
-                max_nesting_depth: None,
+                    max_nesting_depth: None,
                 },
                 embedding: query_vec.clone(), // exact match → highest cosine similarity
             },
@@ -468,7 +468,7 @@ impl InvertedIndex {
                     module_name: "InvertedIndex::build".into(),
                     symbol_kind: SymbolKind::Function,
                     text: doc_b_text.to_string(),
-                max_nesting_depth: None,
+                    max_nesting_depth: None,
                 },
                 embedding: (0..384).map(|i| if i < 192 { 0.1 } else { 0.9 }).collect(), // opposite pattern
             },
@@ -481,7 +481,7 @@ impl InvertedIndex {
                     module_name: "hybrid_search".into(),
                     symbol_kind: SymbolKind::Function,
                     text: doc_c_text.to_string(),
-                max_nesting_depth: None,
+                    max_nesting_depth: None,
                 },
                 embedding: (0..384).map(|i| if i < 128 { 0.7 } else { 0.3 }).collect(), // partial match
             },
@@ -634,7 +634,7 @@ fn test_bm25_scored_by_text_relevance() {
         module_name: "other".into(),
         symbol_kind: SymbolKind::Function,
         text: "fn init_other() -> OtherType { OtherType::new(OtherConfig::default()) }".to_string(),
-                max_nesting_depth: None,
+        max_nesting_depth: None,
     };
 
     let embedding = vec![0.1; 384];
@@ -679,7 +679,7 @@ fn test_search_filters_by_symbol_kind() {
     // Search only Function symbols
     let filters = rust_rag_core::vector_store::SearchFilters {
         file_extension: None,
-        symbol_kind: Some(rust_rag_core::indexer::SymbolKind::Function),
+        symbol_kind: Some("function".to_string()),
     };
     let results = store
         .hybrid_search(&query_vec, "embedding", 5, 0.7, Some(&filters))
@@ -716,7 +716,7 @@ fn test_search_filters_by_file_extension() {
                     module_name: "a".into(),
                     symbol_kind: SymbolKind::Function,
                     text: "fn main() {}".to_string(),
-                max_nesting_depth: None,
+                    max_nesting_depth: None,
                 },
                 embedding: embedding.clone(),
             },
@@ -729,7 +729,7 @@ fn test_search_filters_by_file_extension() {
                     module_name: "b".into(),
                     symbol_kind: SymbolKind::Function,
                     text: "def main(): pass".to_string(),
-                max_nesting_depth: None,
+                    max_nesting_depth: None,
                 },
                 embedding: embedding.clone(),
             },
@@ -831,7 +831,7 @@ fn test_hybrid_search_filters_exclude_documents() {
     // With filter for ImplBlock — none of our test docs are ImplBlock
     let filters = rust_rag_core::vector_store::SearchFilters {
         file_extension: None,
-        symbol_kind: Some(rust_rag_core::indexer::SymbolKind::ImplBlock),
+        symbol_kind: Some("implblock".to_string()),
     };
     let results_filtered = store
         .hybrid_search(&query_vec, "test", 5, 0.7, Some(&filters))
@@ -1424,7 +1424,7 @@ fn test_search_filters_by_various_symbol_kinds() {
                     module_name: "f".into(),
                     symbol_kind: SymbolKind::Function,
                     text: "fn foo() {}".to_string(),
-                max_nesting_depth: None,
+                    max_nesting_depth: None,
                 },
                 embedding: embedding.clone(),
             },
@@ -1437,7 +1437,7 @@ fn test_search_filters_by_various_symbol_kinds() {
                     module_name: "Bar".into(),
                     symbol_kind: SymbolKind::ImplBlock,
                     text: "impl Bar { fn baz(&self) {} }".to_string(),
-                max_nesting_depth: None,
+                    max_nesting_depth: None,
                 },
                 embedding: embedding.clone(),
             },
@@ -1450,7 +1450,7 @@ fn test_search_filters_by_various_symbol_kinds() {
                     module_name: "unsafe_block".into(),
                     symbol_kind: SymbolKind::UnsafeRegion,
                     text: "unsafe { std::mem::transmute(0) }".to_string(),
-                max_nesting_depth: None,
+                    max_nesting_depth: None,
                 },
                 embedding: embedding.clone(),
             },
@@ -1460,7 +1460,7 @@ fn test_search_filters_by_various_symbol_kinds() {
     // Filter for ImplBlock — should only return doc_impl
     let filters = rust_rag_core::vector_store::SearchFilters {
         file_extension: None,
-        symbol_kind: Some(rust_rag_core::indexer::SymbolKind::ImplBlock),
+        symbol_kind: Some("implblock".to_string()),
     };
     let results = store
         .hybrid_search(&embedding, "", 5, 1.0, Some(&filters))
@@ -1471,7 +1471,7 @@ fn test_search_filters_by_various_symbol_kinds() {
     // Filter for UnsafeRegion — should only return doc_unsafe
     let filters = rust_rag_core::vector_store::SearchFilters {
         file_extension: None,
-        symbol_kind: Some(rust_rag_core::indexer::SymbolKind::UnsafeRegion),
+        symbol_kind: Some("unsaferegion".to_string()),
     };
     let results = store
         .hybrid_search(&embedding, "", 5, 1.0, Some(&filters))
@@ -1513,7 +1513,7 @@ fn test_bm25_empty_documents_handled() {
                     module_name: "test".into(),
                     symbol_kind: SymbolKind::Function,
                     text: "fn test_function() -> i32 { 42 }".to_string(),
-                max_nesting_depth: None,
+                    max_nesting_depth: None,
                 },
                 embedding: embedding.clone(),
             },
@@ -1526,7 +1526,7 @@ fn test_bm25_empty_documents_handled() {
                     module_name: "x".into(),
                     symbol_kind: SymbolKind::Function,
                     text: "fn f() {}".to_string(),
-                max_nesting_depth: None,
+                    max_nesting_depth: None,
                 },
                 embedding: embedding.clone(),
             },
@@ -1599,7 +1599,7 @@ fn my_func() {
         module_name: "main/my_func".to_string(),
         symbol_kind: SymbolKind::Function,
         text: code.to_string(),
-                max_nesting_depth: None,
+        max_nesting_depth: None,
     }];
 
     let (graph, _name_map) = rust_rag_core::callgraph::build_call_graph(&chunks).unwrap();
@@ -1616,7 +1616,7 @@ fn test_callgraph_build_creates_nodes_for_all_chunks() {
             module_name: "main/my_func".to_string(),
             symbol_kind: SymbolKind::Function,
             text: "fn my_func() {}".to_string(),
-                max_nesting_depth: None,
+            max_nesting_depth: None,
         },
         rust_rag_core::indexer::Chunk {
             file_path: PathBuf::from("src/lib.rs"),
@@ -1625,7 +1625,7 @@ fn test_callgraph_build_creates_nodes_for_all_chunks() {
             module_name: "lib/helper".to_string(),
             symbol_kind: SymbolKind::Function,
             text: "fn helper() {}".to_string(),
-                max_nesting_depth: None,
+            max_nesting_depth: None,
         },
     ];
 
@@ -1642,7 +1642,7 @@ fn test_callgraph_ignores_non_function_chunks() {
         module_name: "lib/my_struct".to_string(),
         symbol_kind: SymbolKind::Struct,
         text: "struct MyStruct {}".to_string(),
-                max_nesting_depth: None,
+        max_nesting_depth: None,
     }];
 
     let (graph, _name_map) = rust_rag_core::callgraph::build_call_graph(&chunks).unwrap();
@@ -1907,8 +1907,14 @@ pub fn standalone() -> i32 {
     .expect("should parse");
 
     // Collect impl and function kinds
-    let impl_chunks: Vec<_> = chunks.iter().filter(|c| c.symbol_kind == SymbolKind::ImplBlock).collect();
-    let func_chunks: Vec<_> = chunks.iter().filter(|c| c.symbol_kind == SymbolKind::Function).collect();
+    let impl_chunks: Vec<_> = chunks
+        .iter()
+        .filter(|c| c.symbol_kind == SymbolKind::ImplBlock)
+        .collect();
+    let func_chunks: Vec<_> = chunks
+        .iter()
+        .filter(|c| c.symbol_kind == SymbolKind::Function)
+        .collect();
 
     // There should be exactly ONE impl chunk (the full impl block including all methods)
     assert_eq!(impl_chunks.len(), 1, "Should extract one impl block");
@@ -1916,7 +1922,10 @@ pub fn standalone() -> i32 {
     // The impl chunk text must contain the method names
     let impl_text = &impl_chunks[0].text;
     assert!(impl_text.contains("fn new()"), "Impl should contain 'new'");
-    assert!(impl_text.contains("fn increment"), "Impl should contain 'increment'");
+    assert!(
+        impl_text.contains("fn increment"),
+        "Impl should contain 'increment'"
+    );
     assert!(impl_text.contains("fn get"), "Impl should contain 'get'");
 
     // Methods inside impl must NOT be separate Function chunks.
@@ -1931,7 +1940,11 @@ pub fn standalone() -> i32 {
     }
 
     // There should be exactly one top-level function: `standalone`
-    assert_eq!(func_chunks.len(), 1, "Should extract exactly one standalone function");
+    assert_eq!(
+        func_chunks.len(),
+        1,
+        "Should extract exactly one standalone function"
+    );
 }
 
 #[test]
@@ -1957,9 +1970,15 @@ impl Draw for Circle {
     )
     .expect("should parse");
 
-    let func_chunks: Vec<_> = chunks.iter().filter(|c| c.symbol_kind == SymbolKind::Function).collect();
+    let func_chunks: Vec<_> = chunks
+        .iter()
+        .filter(|c| c.symbol_kind == SymbolKind::Function)
+        .collect();
     // The draw() method inside the impl must NOT be a separate function chunk
-    assert!(func_chunks.is_empty(), "Methods inside trait impl should not produce separate Function chunks");
+    assert!(
+        func_chunks.is_empty(),
+        "Methods inside trait impl should not produce separate Function chunks"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1985,9 +2004,19 @@ my_macro!(my_fn);
     )
     .expect("should parse");
 
-    let macro_chunks: Vec<_> = chunks.iter().filter(|c| c.symbol_kind == SymbolKind::Macro).collect();
-    assert_eq!(macro_chunks.len(), 1, "Should extract one macro definition chunk");
-    assert!(macro_chunks[0].text.contains("macro_rules!"), "Chunk should contain the full macro definition");
+    let macro_chunks: Vec<_> = chunks
+        .iter()
+        .filter(|c| c.symbol_kind == SymbolKind::Macro)
+        .collect();
+    assert_eq!(
+        macro_chunks.len(),
+        1,
+        "Should extract one macro definition chunk"
+    );
+    assert!(
+        macro_chunks[0].text.contains("macro_rules!"),
+        "Chunk should contain the full macro definition"
+    );
 
     // The macro_invocation (my_macro!(my_fn);) must NOT produce a separate chunk.
     for chunk in &chunks {
@@ -2020,9 +2049,15 @@ macro_rules! outer {
     )
     .expect("should parse");
 
-    let macro_chunks: Vec<_> = chunks.iter().filter(|c| c.symbol_kind == SymbolKind::Macro).collect();
+    let macro_chunks: Vec<_> = chunks
+        .iter()
+        .filter(|c| c.symbol_kind == SymbolKind::Macro)
+        .collect();
     // Should find the outer macro definition; inner!() invocation must not be a chunk.
-    assert!(!macro_chunks.is_empty(), "Should extract at least one macro chunk");
+    assert!(
+        !macro_chunks.is_empty(),
+        "Should extract at least one macro chunk"
+    );
 
     // Verify no chunk text contains the standalone invocation without 'macro_rules!'
     for chunk in &chunks {
@@ -2063,21 +2098,37 @@ fn with_nested_blocks() -> i32 {
     )
     .expect("should parse");
 
-    let func_chunks: Vec<_> = chunks.iter().filter(|c| c.symbol_kind == SymbolKind::Function).collect();
+    let func_chunks: Vec<_> = chunks
+        .iter()
+        .filter(|c| c.symbol_kind == SymbolKind::Function)
+        .collect();
     assert_eq!(func_chunks.len(), 2);
 
     // simple() has no deeply-nested code — only the function itself and its block body.
-    let simple = func_chunks.iter().find(|c| c.text.contains("fn simple")).unwrap();
+    let simple = func_chunks
+        .iter()
+        .find(|c| c.text.contains("fn simple"))
+        .unwrap();
     if let Some(d) = simple.max_nesting_depth {
-        assert_eq!(d, 2, "Top-level function has fn(1) + body block(1) = depth 2");
+        assert_eq!(
+            d, 2,
+            "Top-level function has fn(1) + body block(1) = depth 2"
+        );
     } else {
         panic!("max_nesting_depth should be set for Function chunks");
     }
 
     // with_nested_blocks has if → for → loop nested inside the function — much deeper.
-    let complex = func_chunks.iter().find(|c| c.text.contains("fn with_nested_blocks")).unwrap();
+    let complex = func_chunks
+        .iter()
+        .find(|c| c.text.contains("fn with_nested_blocks"))
+        .unwrap();
     if let Some(d) = complex.max_nesting_depth {
-        assert!(d >= 4, "Function with if/for/loop should have nesting depth >= 4, got {}", d);
+        assert!(
+            d >= 4,
+            "Function with if/for/loop should have nesting depth >= 4, got {}",
+            d
+        );
     } else {
         panic!("max_nesting_depth should be set for Function chunks");
     }
@@ -2116,21 +2167,34 @@ impl Foo {
     )
     .expect("should parse");
 
-    let impl_chunks: Vec<_> = chunks.iter().filter(|c| c.symbol_kind == SymbolKind::ImplBlock).collect();
+    let impl_chunks: Vec<_> = chunks
+        .iter()
+        .filter(|c| c.symbol_kind == SymbolKind::ImplBlock)
+        .collect();
     assert_eq!(impl_chunks.len(), 1);
 
     if let Some(d) = impl_chunks[0].max_nesting_depth {
         // impl block (1) + fn method_a body (1) = 2 for simple method.
         // impl(1) + fn method_b(1) + if-else body blocks(1) = 3 for deeper method.
-        assert!(d >= 2, "Impl block should have nesting depth >= 2, got {}", d);
+        assert!(
+            d >= 2,
+            "Impl block should have nesting depth >= 2, got {}",
+            d
+        );
     } else {
         panic!("max_nesting_depth should be set for ImplBlock chunks");
     }
 
     // Verify that the impl chunk text contains both methods
     let text = &impl_chunks[0].text;
-    assert!(text.contains("fn method_a"), "Impl chunk should contain method_a");
-    assert!(text.contains("fn method_b"), "Impl chunk should contain method_b");
+    assert!(
+        text.contains("fn method_a"),
+        "Impl chunk should contain method_a"
+    );
+    assert!(
+        text.contains("fn method_b"),
+        "Impl chunk should contain method_b"
+    );
 }
 
 #[test]
@@ -2153,7 +2217,8 @@ fn test_eval_diagnostics_nesting_quality() {
             line_end: 40,
             module_name: "impl Foo".into(),
             symbol_kind: SymbolKind::ImplBlock,
-            text: "impl Foo {\n    fn a(&self) {}\n    fn b(&mut self) { if true {} }\n}".to_string(),
+            text: "impl Foo {\n    fn a(&self) {}\n    fn b(&mut self) { if true {} }\n}"
+                .to_string(),
             max_nesting_depth: Some(3), // impl(1) + fn body(1) + if block(1) = 3
         },
         // Another file with nesting — fn(1) + for loop body(1) = 2.
@@ -2174,7 +2239,7 @@ fn test_eval_diagnostics_nesting_quality() {
     assert_eq!(diags.file_count, 2);
 
     // avg nesting depth = (2 + 3 + 2) / 3 ≈ 2.33
-    assert!((diags.avg_nesting_depth - 7.0/3.0).abs() < 0.01);
+    assert!((diags.avg_nesting_depth - 7.0 / 3.0).abs() < 0.01);
 
     // Both files have nested code → 100% of files with nesting
     assert_eq!(diags.file_pct_with_nested_code, 100.0);
@@ -2189,17 +2254,15 @@ fn test_eval_diagnostics_nesting_quality() {
 #[test]
 fn test_eval_diagnostics_no_nested_chunks() {
     // A simple top-level function always has fn+block = depth 2.
-    let chunks = vec![
-        rust_rag_core::indexer::Chunk {
-            file_path: PathBuf::from("flat.rs"),
-            line_start: 0,
-            line_end: 5,
-            module_name: "f1".into(),
-            symbol_kind: SymbolKind::Function,
-            text: "fn f1() {}".to_string(),
-            max_nesting_depth: Some(2),
-        },
-    ];
+    let chunks = vec![rust_rag_core::indexer::Chunk {
+        file_path: PathBuf::from("flat.rs"),
+        line_start: 0,
+        line_end: 5,
+        module_name: "f1".into(),
+        symbol_kind: SymbolKind::Function,
+        text: "fn f1() {}".to_string(),
+        max_nesting_depth: Some(2),
+    }];
 
     let diags = rust_rag_core::eval::chunk_diagnostics(&chunks);
 

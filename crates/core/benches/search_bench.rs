@@ -1,4 +1,4 @@
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use rust_rag_core::indexer;
 use std::time::Duration;
 
@@ -19,9 +19,8 @@ edition = "2021""#,
     for i in 0..file_count {
         let file_path = src_dir.join(format!("lib_{}.rs", i));
         let content = generate_rust_code(3); // ~3 AST nodes per file (small)
-        std::fs::write(&file_path, &content).unwrap_or_else(|_| {
-            panic!("failed to write {}", file_path.display())
-        });
+        std::fs::write(&file_path, &content)
+            .unwrap_or_else(|_| panic!("failed to write {}", file_path.display()));
     }
 
     std::fs::write(
@@ -44,15 +43,19 @@ fn generate_rust_code(num_nodes: usize) -> String {
         ));
         code.push_str("impl ");
         code.push_str(&struct_name);
-        code.push_str(r#" {
-    pub fn "#);
+        code.push_str(
+            r#" {
+    pub fn "#,
+        );
         code.push_str(&fn_name);
-        code.push_str(r#"(&self) -> String {
+        code.push_str(
+            r#"(&self) -> String {
         self.data.iter().map(|b| *b as char).collect()
     }
 }
 
-"#);
+"#,
+        );
     }
     code
 }
@@ -66,27 +69,36 @@ fn populate_store(dir: &tempfile::TempDir) -> (rust_rag_core::vector_store::Vect
     let query_vec: Vec<f32> = vec![0.5; 384];
 
     let store_dir = tempfile::tempdir().expect("should create store dir");
-    let store = rust_rag_core::vector_store::VectorStore::open(&store_dir).expect("should open store");
+    let store =
+        rust_rag_core::vector_store::VectorStore::open(&store_dir).expect("should open store");
 
     // Batch insert all chunks with deterministic embeddings (32 at a time)
-    let chunk_batch: Vec<_> = chunks.iter().take(32).map(|c| {
-        rust_rag_core::vector_store::Document {
+    let chunk_batch: Vec<_> = chunks
+        .iter()
+        .take(32)
+        .map(|c| rust_rag_core::vector_store::Document {
             id: format!("chunk_{}", c.module_name),
             chunk: c.clone(),
-            embedding: (0..384).map(|i| if i % 2 == 0 { 0.7 } else { 0.1 }).collect(),
-        }
-    }).collect();
+            embedding: (0..384)
+                .map(|i| if i % 2 == 0 { 0.7 } else { 0.1 })
+                .collect(),
+        })
+        .collect();
     store.insert_documents(&chunk_batch).expect("should insert");
 
     // If total chunks > 32, add remaining documents in a second batch
     if chunks.len() > 32 {
-        let remaining: Vec<_> = chunks.iter().skip(32).map(|c| {
-            rust_rag_core::vector_store::Document {
+        let remaining: Vec<_> = chunks
+            .iter()
+            .skip(32)
+            .map(|c| rust_rag_core::vector_store::Document {
                 id: format!("chunk_{}", c.module_name),
                 chunk: c.clone(),
-                embedding: (0..384).map(|i| if i % 2 == 0 { 0.7 } else { 0.1 }).collect(),
-            }
-        }).collect();
+                embedding: (0..384)
+                    .map(|i| if i % 2 == 0 { 0.7 } else { 0.1 })
+                    .collect(),
+            })
+            .collect();
         store.insert_documents(&remaining).expect("should insert");
     }
 
@@ -105,17 +117,18 @@ fn search_benchmark(c: &mut Criterion) {
     {
         let mut group = c.benchmark_group("search_latency_p50_top1");
         group.sample_size(10);
-       group.warm_up_time(Duration::from_millis(50));
+        group.warm_up_time(Duration::from_millis(50));
         group.measurement_time(Duration::from_millis(200));
         group.bench_function("search", |b| {
             b.iter(|| {
                 let _results = black_box(store.hybrid_search(
                     black_box(&query_vec),
                     black_box("benchmark query"),
-                    black_box(1), // top_k=1 -> p50 latency (fast path)
+                    black_box(1),   // top_k=1 -> p50 latency (fast path)
                     black_box(0.7), // alpha blending
                     None,
-                )).unwrap();
+                ))
+                .unwrap();
             });
         });
     }
@@ -133,7 +146,8 @@ fn search_benchmark(c: &mut Criterion) {
                     black_box(10), // top_k=10 -> p95 latency
                     black_box(0.7),
                     None,
-                )).unwrap();
+                ))
+                .unwrap();
             });
         });
     }
@@ -151,7 +165,8 @@ fn search_benchmark(c: &mut Criterion) {
                     black_box(50), // top_k=50 -> tail latency (p99)
                     black_box(0.7),
                     None,
-                )).unwrap();
+                ))
+                .unwrap();
             });
         });
     }

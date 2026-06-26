@@ -1,4 +1,4 @@
-/// Integration tests for the HTTP API server.
+/// Integration tests for the HTTP API server and MCP server.
 ///
 /// These tests modify environment variables, so they must run sequentially.
 /// We use a module-level mutex to serialize access.
@@ -98,7 +98,10 @@ fn test_rate_limiter_rejects_over_budget() {
     assert!(limiter.check("x"));
     assert!(limiter.check("x"));
     assert!(limiter.check("x"));
-    assert!(!limiter.check("x"), "should be rejected after budget exhausted");
+    assert!(
+        !limiter.check("x"),
+        "should be rejected after budget exhausted"
+    );
 }
 
 #[test]
@@ -110,7 +113,10 @@ fn test_rate_limiter_independent_per_client() {
     // bob is independent — his own budget untouched.
     assert!(limiter.check("bob"));
     // alice exhausted, should be rejected.
-    assert!(!limiter.check("alice"), "alice should be rejected after 2 requests");
+    assert!(
+        !limiter.check("alice"),
+        "alice should be rejected after 2 requests"
+    );
     // bob still has one slot left.
     assert!(limiter.check("bob"), "bob should still be allowed");
 }
@@ -189,3 +195,6 @@ fn test_build_router_creates_valid_app() {
     let state = AppState::from_path(dir.path(), 60).unwrap();
     let _router = rust_rag_server::build_router(state);
 }
+
+// ── MCP server tests ────────────────────────────────────────────────
+mod mcp_tests;

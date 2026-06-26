@@ -35,6 +35,23 @@ pub struct EmbeddingConfig {
     pub chunk_overlap: usize,
 }
 
+impl EmbeddingConfig {
+    /// Validate the configuration values.
+    ///
+    /// # Returns
+    /// Ok(()) if valid, Err with descriptive message if invalid
+    pub fn validate(&self) -> Result<(), String> {
+        // chunk_overlap should be reasonable (let's say max 100 lines to prevent excessive memory usage)
+        if self.chunk_overlap > 100 {
+            return Err(format!(
+                "chunk_overlap ({}) is too large (maximum 100)",
+                self.chunk_overlap
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Configuration for LLM endpoint access.
 #[derive(Debug, Deserialize, Default)]
 pub struct LlmConfig {
@@ -49,6 +66,26 @@ pub struct LlmConfig {
     pub max_context_size: Option<usize>,
 }
 
+impl LlmConfig {
+    /// Validate the configuration values.
+    ///
+    /// # Returns
+    /// Ok(()) if valid, Err with descriptive message if invalid
+    pub fn validate(&self) -> Result<(), String> {
+        // top_k should be positive
+        if self.top_k == 0 {
+            return Err("top_k must be greater than 0".to_string());
+        }
+        // max_context_size if set should be positive
+        if let Some(size) = self.max_context_size {
+            if size == 0 {
+                return Err("max_context_size must be greater than 0 if set".to_string());
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Configuration for semantic caching of LLM answers.
 #[derive(Debug, Deserialize)]
 pub struct SemanticCacheConfig {
@@ -58,6 +95,20 @@ pub struct SemanticCacheConfig {
     /// Time-to-live in seconds for cached entries (default: 3600 = 1 hour).
     #[serde(default = "default_cache_ttl")]
     pub ttl_secs: u64,
+}
+
+impl SemanticCacheConfig {
+    /// Validate the configuration values.
+    ///
+    /// # Returns
+    /// Ok(()) if valid, Err with descriptive message if invalid
+    pub fn validate(&self) -> Result<(), String> {
+        // ttl_secs should be positive
+        if self.ttl_secs == 0 {
+            return Err("ttl_secs must be greater than 0".to_string());
+        }
+        Ok(())
+    }
 }
 
 impl Default for SemanticCacheConfig {
@@ -126,5 +177,16 @@ impl Config {
     /// Return a reference to the semantic cache configuration.
     pub fn semantic_cache_config(&self) -> &SemanticCacheConfig {
         &self.semantic_cache
+    }
+
+    /// Validate all configuration values.
+    ///
+    /// # Returns
+    /// Ok(()) if valid, Err with descriptive message if invalid
+    pub fn validate(&self) -> Result<(), String> {
+        self.embedding.validate()?;
+        self.llm.validate()?;
+        self.semantic_cache.validate()?;
+        Ok(())
     }
 }

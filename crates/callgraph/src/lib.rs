@@ -22,9 +22,7 @@ pub struct Symbol {
 }
 
 /// Build a call graph from indexed chunks using ra_ap_syntax AST analysis.
-pub fn build_call_graph(
-    chunks: &[Chunk],
-) -> Result<CallGraphResult, RagCoreError> {
+pub fn build_call_graph(chunks: &[Chunk]) -> Result<CallGraphResult, RagCoreError> {
     let mut graph = Graph::<Symbol, f32>::new();
     let mut name_to_index: HashMap<String, NodeIndex> = HashMap::new();
 

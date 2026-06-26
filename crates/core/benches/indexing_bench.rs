@@ -1,14 +1,15 @@
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use rust_rag_core::indexer;
-use tempfile::TempDir;
 use std::time::Duration;
+use tempfile::TempDir;
 
 /// Generate Rust source files with realistic content for benchmarking.
 fn generate_rust_files(dir: &TempDir, file_count: usize) {
     // Members live at workspace root level (same as Cargo.toml), not under src/
     for member_idx in 0..3usize {
         let member_dir = dir.path().join(format!("member_{}", member_idx));
-        std::fs::create_dir_all(&member_dir).unwrap_or_else(|_| panic!("failed to create {}", member_dir.display()));
+        std::fs::create_dir_all(&member_dir)
+            .unwrap_or_else(|_| panic!("failed to create {}", member_dir.display()));
         // Write a minimal Cargo.toml for each member so it's a valid crate root
         let cargo_path = member_dir.join("Cargo.toml");
         if !cargo_path.exists() {
@@ -18,7 +19,8 @@ fn generate_rust_files(dir: &TempDir, file_count: usize) {
 name = "member_0"
 version = "0.1.0"
 edition = "2021""#,
-            ).unwrap();
+            )
+            .unwrap();
         }
     }
 
@@ -39,15 +41,15 @@ edition = "2021""#,
         let file_num = (i / 3) + 1;
         // Source files live under src/ inside each member crate
         let src_dir = dir.path().join(format!("{}/src", member_name));
-        std::fs::create_dir_all(&src_dir).unwrap_or_else(|_| panic!("failed to create {}", src_dir.display()));
+        std::fs::create_dir_all(&src_dir)
+            .unwrap_or_else(|_| panic!("failed to create {}", src_dir.display()));
 
         let file_path = src_dir.join(format!("lib_{}.rs", file_num));
 
         // Generate a chunk of Rust code with functions, impls, structs, etc.
         let content = generate_rust_code(5); // ~5 AST nodes per file for realistic size
-        std::fs::write(&file_path, &content).unwrap_or_else(|_| {
-            panic!("failed to write {}", file_path.display())
-        });
+        std::fs::write(&file_path, &content)
+            .unwrap_or_else(|_| panic!("failed to write {}", file_path.display()));
     }
 
     // Write .rustrag.toml with overlap=0 for fastest parsing (overlap adds I/O)
@@ -73,7 +75,9 @@ fn generate_rust_code(num_nodes: usize) -> String {
             "impl {} {{\n    pub fn {}(&self) -> Result<String, anyhow::Error> {{\n",
             struct_name, fn_name
         ));
-        code.push_str("        let result = self.field_a.clone() + &format!(\"value={}\", self.field_b);\n");
+        code.push_str(
+            "        let result = self.field_a.clone() + &format!(\"value={}\", self.field_b);\n",
+        );
         code.push_str("        Ok(result)\n    }\n}\n\n");
     }
     code
@@ -86,7 +90,7 @@ fn indexing_benchmark(c: &mut Criterion) {
     for &size in &sizes {
         let mut group = c.benchmark_group(format!("index_workspace_{}_files", size * 3));
         group.sample_size(10);
-       group.warm_up_time(Duration::from_millis(50));
+        group.warm_up_time(Duration::from_millis(50));
         group.measurement_time(Duration::from_millis(500));
 
         group.bench_function("index", |b| {

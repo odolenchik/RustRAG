@@ -25,8 +25,6 @@ enum Command {
     Clean(CleanArgs),
     /// Ask a question about an indexed workspace
     Ask(AskArgs),
-    /// Start interactive chat session with LLM assistance
-    Chat(ChatArgs),
     /// Download the embedding model (bge-small-en-v1.5) from HuggingFace
     Download(DownloadArgs),
 
@@ -87,13 +85,6 @@ struct AskArgs {
     /// Output results as JSON
     #[arg(long, default_value = "false")]
     json: bool,
-}
-
-#[derive(clap::Args)]
-struct ChatArgs {
-    /// Path to the workspace whose index should be used (defaults to current directory)
-    #[arg(short, long)]
-    path: Option<String>,
 }
 
 #[derive(clap::Args)]
@@ -187,11 +178,6 @@ async fn main() -> Result<()> {
             } else {
                 rust_rag_cli::ask(&args.query, workspace.as_deref())
             }
-        }
-        Command::Chat(args) => {
-            let path: Option<String> = resolve_workspace_path(args.path.as_deref())?
-                .map(|p| p.to_string_lossy().to_string());
-            return rust_rag_tui::run(path.as_deref());
         }
         Command::Download(args) => {
             let target = if let Some(path) = args.path {

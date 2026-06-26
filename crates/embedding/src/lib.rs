@@ -9,7 +9,7 @@
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-use serde_json; // needed for embedding cache serialization
+
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fmt::Write as FmtWrite;
@@ -160,23 +160,25 @@ fn try_init_embedder(model_dir: &Path) -> Result<TextEmbedding, RagCoreError> {
     let user_model =
         UserDefinedEmbeddingModel::new(onnx_bytes, tokenizer_files).with_pooling(Pooling::Cls);
 
-    TextEmbedding::try_new_from_user_defined(user_model, InitOptionsUserDefined::default()).map_err(|e| {
-        RagCoreError::Embedding(
-            "Failed to initialize user-defined embedding model".to_string(),
-            Box::new(std::io::Error::other(e)),
-        )
-    })
+    TextEmbedding::try_new_from_user_defined(user_model, InitOptionsUserDefined::default()).map_err(
+        |e| {
+            RagCoreError::Embedding(
+                "Failed to initialize user-defined embedding model".to_string(),
+                Box::new(std::io::Error::other(e)),
+            )
+        },
+    )
 }
 
 static EMBEDDER: OnceLock<Result<TextEmbedding, RagCoreError>> = OnceLock::new();
 
 fn get_embedder() -> Result<&'static TextEmbedding, RagCoreError> {
-    EMBEDDER.get_or_init(init_embedder)
-        .as_ref()
-        .map_err(|e| RagCoreError::Embedding(
+    EMBEDDER.get_or_init(init_embedder).as_ref().map_err(|e| {
+        RagCoreError::Embedding(
             "Embedding model initialization failed".to_string(),
             Box::new(std::io::Error::other(format!("{:?}", e))),
-        ))
+        )
+    })
 }
 
 /// Embed a single text chunk into a vector using the local embedding model.
@@ -198,14 +200,12 @@ pub fn embed(text: &str) -> Result<Vec<f32>, RagCoreError> {
 #[tracing::instrument(level = "debug", skip_all, fields(text_count = texts.len()))]
 pub fn embed_batch(texts: &[&str]) -> Result<Vec<Vec<f32>>, RagCoreError> {
     let strings: Vec<String> = texts.iter().map(|t| t.to_string()).collect();
-    let results = get_embedder()?
-        .embed(strings, None)
-        .map_err(|e| {
-            RagCoreError::Embedding(
-                "Failed to compute batch embedding".to_string(),
-                Box::new(std::io::Error::other(e)),
-            )
-        })?;
+    let results = get_embedder()?.embed(strings, None).map_err(|e| {
+        RagCoreError::Embedding(
+            "Failed to compute batch embedding".to_string(),
+            Box::new(std::io::Error::other(e)),
+        )
+    })?;
 
     Ok(results.into_iter().collect())
 }
@@ -330,10 +330,7 @@ impl EmbedCache {
         let tmp_path = self.path.with_extension("jsonl.tmp");
         std::fs::write(&tmp_path, &content)?;
         #[cfg(unix)]
-        if let Err(e) = std::fs::set_permissions(
-            &self.path,
-            PermissionsExt::from_mode(0o600),
-        ) {
+        if let Err(e) = std::fs::set_permissions(&self.path, PermissionsExt::from_mode(0o600)) {
             tracing::warn!(
                 "[warning] Failed to set file permissions on {}: {}",
                 self.path.display(),
@@ -393,10 +390,7 @@ pub fn download_model(target: &Path) -> Result<(), RagCoreError> {
 
     for &(remote_path, local_name) in &files {
         println!("Downloading {}...", remote_path);
-        let url = format!(
-            "https://huggingface.co/{}/resolve/{}",
-            repo, remote_path
-        );
+        let url = format!("https://huggingface.co/{}/resolve/{}", repo, remote_path);
 
         let response = client.get(&url).send().map_err(|e| {
             RagCoreError::Embedding(
@@ -406,7 +400,11 @@ pub fn download_model(target: &Path) -> Result<(), RagCoreError> {
         })?;
         if !response.status().is_success() {
             return Err(RagCoreError::Embedding(
-                format!("Failed to download {}: HTTP {}", remote_path, response.status()),
+                format!(
+                    "Failed to download {}: HTTP {}",
+                    remote_path,
+                    response.status()
+                ),
                 Box::new(std::io::Error::other("HTTP error")),
             ));
         }
@@ -435,7 +433,10 @@ pub fn download_model(target: &Path) -> Result<(), RagCoreError> {
             let digest = sha256_hex(&bytes);
             if digest[..] != expected_hash[..] {
                 return Err(RagCoreError::Embedding(
-                    format!("Checksum mismatch for {}: expected {}, got {}", local_name, expected_hash, digest),
+                    format!(
+                        "Checksum mismatch for {}: expected {}, got {}",
+                        local_name, expected_hash, digest
+                    ),
                     Box::new(std::io::Error::other("checksum")),
                 ));
             } else {

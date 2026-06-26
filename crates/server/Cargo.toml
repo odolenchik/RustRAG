@@ -23,6 +23,7 @@ async-stream = "0.3"
 futures-util = "0.3"
 toml = "0.8"
 glob = "0.3"
+url = "2"
 
 rust-rag-core = { path = "../core" }
 rust-rag-llm = { path = "../llm" }
@@ -30,4 +31,3 @@ reqwest = { version = "0.12", features = ["rustls-tls"] }
 
 [dev-dependencies]
 tempfile = "3"
-url = "2"

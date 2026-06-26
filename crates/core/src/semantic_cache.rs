@@ -10,6 +10,12 @@ use std::path::{Path, PathBuf};
 /// Default TTL for cache entries (1 hour in seconds).
 pub const DEFAULT_TTL_SECS: u64 = 3600;
 
+    /// Compute L2 norm of a vector.
+    fn compute_norm(v: &[f32]) -> f32 {
+        let sum_sq: f32 = v.iter().map(|&x| x * x).sum();
+        sum_sq.sqrt()
+    }
+
 /// A single semantic-cache entry: the stored question embedding, the original question,
 /// the LLM answer, and an expiration timestamp (Unix epoch, seconds since 1970-01-01).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20,6 +26,9 @@ struct CacheEntry {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     #[serde(default)]
     embedding: Vec<f32>,
+    /// Precomputed L2 norm of the embedding vector.
+    #[serde(default)]
+    embedding_norm: f32,
     /// The original question text (human-readable log / debug).
     question: String,
     /// The LLM's answer text.
@@ -104,7 +113,7 @@ impl SemanticCache {
             Ok(v) => v,
             Err(_) => return None,
         };
-
+        let query_norm = compute_norm(&embedding);
         let threshold: f32 = 0.85; // cosine similarity threshold for a cache hit
         let mut best_hash: Option<String> = None;
         let mut best_sim: f32 = -1.0;
@@ -115,7 +124,13 @@ impl SemanticCache {
                 if is_expired(entry.expires_at) || entry.embedding.is_empty() {
                     continue;
                 }
-                let sim = crate::vector_store::cosine_similarity(&embedding, &entry.embedding);
+                if query_norm == 0.0 || entry.embedding_norm == 0.0 {
+                    // similarity will be zero; skip unless we want to consider zero similarity
+                    // but threshold is 0.85, so zero won't match; we can continue to save computation
+                    continue;
+                }
+                let dot: f32 = embedding.iter().zip(entry.embedding.iter()).map(|(a, b)| a * b).sum();
+                let sim = dot / (query_norm * entry.embedding_norm);
                 if sim > threshold && sim > best_sim {
                     best_sim = sim;
                     best_hash = Some(entry.question_hash.clone());
@@ -145,6 +160,7 @@ impl SemanticCache {
         }
 
         let embedding = crate::embedding::embed(question)?;
+        let embedding_norm = compute_norm(&embedding);
         let now_secs = current_unix_timestamp();
         let question_hash = sha256_hex(question);
 
@@ -154,6 +170,7 @@ impl SemanticCache {
             let entry = CacheEntry {
                 question_hash: question_hash.clone(),
                 embedding,
+                embedding_norm,
                 question: question.to_string(),
                 answer: answer.to_string(),
                 expires_at: now_secs + self.ttl_secs,
@@ -200,10 +217,7 @@ fn sha256_hex(data: &str) -> String {
 }
 
 /// Load cache entries from a JSONL file into an in-memory HashMap.
-fn load_jsonl(
-    path: &Path,
-    _ttl_secs: &u64,
-) -> Result<HashMap<String, CacheEntry>, RagCoreError> {
+fn load_jsonl(path: &Path, _ttl_secs: &u64) -> Result<HashMap<String, CacheEntry>, RagCoreError> {
     let mut map = HashMap::new();
     if !path.exists() {
         return Ok(map);
@@ -238,10 +252,7 @@ fn persist_jsonl(
     let tmp_path = path.with_extension("jsonl.tmp");
     std::fs::write(&tmp_path, &content)?;
     #[cfg(unix)]
-    if let Err(e) = std::fs::set_permissions(
-        path,
-        PermissionsExt::from_mode(0o600),
-    ) {
+    if let Err(e) = std::fs::set_permissions(path, PermissionsExt::from_mode(0o600)) {
         tracing::warn!(
             "[warning] Failed to set file permissions on {}: {}",
             path.display(),
@@ -271,7 +282,9 @@ mod tests {
     #[test]
     fn test_write_and_exact_lookup() {
         let (cache, _dir) = make_cache(DEFAULT_TTL_SECS);
-        cache.write_back("what is rust", "Rust is a systems programming language.").unwrap();
+        cache
+            .write_back("what is rust", "Rust is a systems programming language.")
+            .unwrap();
 
         // Exact match should hit.
         assert!(cache.lookup("what is rust").is_some());
@@ -332,12 +345,17 @@ mod tests {
         let dir = cache_dir();
         // Create and write to a cache.
         let cache1 = SemanticCache::open(dir.path(), Some(DEFAULT_TTL_SECS));
-        cache1.write_back("persisted question", "persisted answer").unwrap();
+        cache1
+            .write_back("persisted question", "persisted answer")
+            .unwrap();
         drop(cache1);
 
         // Open a new instance — should load from disk.
         let cache2 = SemanticCache::open(dir.path(), Some(DEFAULT_TTL_SECS));
-        assert_eq!(cache2.lookup("persisted question"), Some("persisted answer".to_string()));
+        assert_eq!(
+            cache2.lookup("persisted question"),
+            Some("persisted answer".to_string())
+        );
     }
 
     #[test]

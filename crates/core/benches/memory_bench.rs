@@ -1,4 +1,6 @@
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+#![allow(clippy::needless_range_loop)]
+
+use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use rust_rag_core::indexer;
 use std::time::Duration;
 
@@ -19,9 +21,8 @@ edition = "2021""#,
     for i in 0..file_count {
         let file_path = src_dir.join(format!("lib_{}.rs", i));
         let content = generate_rust_code(5); // ~5 AST nodes per file, modest size
-        std::fs::write(&file_path, &content).unwrap_or_else(|_| {
-            panic!("failed to write {}", file_path.display())
-        });
+        std::fs::write(&file_path, &content)
+            .unwrap_or_else(|_| panic!("failed to write {}", file_path.display()));
     }
 
     std::fs::write(
@@ -46,11 +47,11 @@ fn generate_rust_code(num_nodes: usize) -> String {
             "impl {} {{\n    pub fn {}(&self) -> Result<String, anyhow::Error> {{\n",
             struct_name, fn_name
         ));
-        code.push_str("        let result = self.data.iter().map(|b| *b as char).collect::<String>();\n");
-        code.push_str("        let meta_count = self.metadata.len();\n");
-        let ok_line = format!(
-            r#"        Ok(format!("{} count={{}} size={{}}"#, fn_name
+        code.push_str(
+            "        let result = self.data.iter().map(|b| *b as char).collect::<String>();\n",
         );
+        code.push_str("        let meta_count = self.metadata.len();\n");
+        let ok_line = format!(r#"        Ok(format!("{} count={{}} size={{}}"#, fn_name);
         code.push_str(&ok_line);
         code.push_str(r#", meta_count, result.len()))"#);
         code.push_str(";\n");
@@ -67,36 +68,43 @@ fn prewarm(dir: &tempfile::TempDir) -> (rust_rag_core::vector_store::VectorStore
     let query_vec: Vec<f32> = vec![0.5; 384];
 
     let store_dir = tempfile::tempdir().expect("should create store dir");
-    let store = rust_rag_core::vector_store::VectorStore::open(&store_dir)
-        .expect("should open store");
+    let store =
+        rust_rag_core::vector_store::VectorStore::open(&store_dir).expect("should open store");
 
     // Insert all documents in one batch (no per-bench-iteration overhead)
-    for _chunk in &chunks {
-        let batch: Vec<_> = chunks.iter().take(32).map(|c| {
-            rust_rag_core::vector_store::Document {
+    let _ = chunks.first();
+    if !chunks.is_empty() {
+        #[allow(unused_variables, clippy::needless_range_loop)]
+        for __chunk in &chunks {
+        let batch: Vec<_> = chunks
+            .iter()
+            .take(32)
+            .map(|c| rust_rag_core::vector_store::Document {
                 id: format!("chunk_{}", c.module_name),
                 chunk: c.clone(),
                 embedding: (0..384)
                     .map(|i| if i % 2 == 0 { 0.7 } else { 0.1 })
                     .collect(),
-            }
-        }).collect();
+            })
+            .collect();
         store.insert_documents(&batch).expect("should insert");
 
         if chunks.len() > 32 {
-            let remaining: Vec<_> = chunks.iter().skip(32).map(|c| {
-                rust_rag_core::vector_store::Document {
+            let remaining: Vec<_> = chunks
+                .iter()
+                .skip(32)
+                .map(|c| rust_rag_core::vector_store::Document {
                     id: format!("chunk_{}", c.module_name),
                     chunk: c.clone(),
                     embedding: (0..384)
                         .map(|i| if i % 2 == 0 { 0.7 } else { 0.1 })
                         .collect(),
-                }
-            }).collect();
+                }).collect();
             store.insert_documents(&remaining).expect("should insert");
         }
 
         break; // first batch already populated everything we need for search measurement
+        }
     }
 
     (store, query_vec)
@@ -109,7 +117,7 @@ fn memory_benchmark(c: &mut Criterion) {
     for &count in &file_counts {
         let mut group = c.benchmark_group(format!("memory_usage_{}_files", count));
         group.sample_size(10);
-       group.warm_up_time(Duration::from_millis(50));
+        group.warm_up_time(Duration::from_millis(50));
         group.measurement_time(Duration::from_millis(500));
         group.bench_function("search", |b| {
             // Pre-warm once outside the iter — measure only search memory behavior
@@ -119,13 +127,15 @@ fn memory_benchmark(c: &mut Criterion) {
             let (store, query_vec) = prewarm(&dir);
 
             b.iter(|| {
-                let _results = store.hybrid_search(
-                    black_box(&query_vec),
-                    black_box("memory benchmark"),
-                    black_box(10),
-                    black_box(0.7),
-                    None,
-                ).unwrap();
+                let _results = store
+                    .hybrid_search(
+                        black_box(&query_vec),
+                        black_box("memory benchmark"),
+                        black_box(10),
+                        black_box(0.7),
+                        None,
+                    )
+                    .unwrap();
             });
         });
     }
