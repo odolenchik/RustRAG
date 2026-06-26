@@ -76,34 +76,35 @@ fn prewarm(dir: &tempfile::TempDir) -> (rust_rag_core::vector_store::VectorStore
     if !chunks.is_empty() {
         #[allow(unused_variables, clippy::needless_range_loop)]
         for __chunk in &chunks {
-        let batch: Vec<_> = chunks
-            .iter()
-            .take(32)
-            .map(|c| rust_rag_core::vector_store::Document {
-                id: format!("chunk_{}", c.module_name),
-                chunk: c.clone(),
-                embedding: (0..384)
-                    .map(|i| if i % 2 == 0 { 0.7 } else { 0.1 })
-                    .collect(),
-            })
-            .collect();
-        store.insert_documents(&batch).expect("should insert");
-
-        if chunks.len() > 32 {
-            let remaining: Vec<_> = chunks
+            let batch: Vec<_> = chunks
                 .iter()
-                .skip(32)
+                .take(32)
                 .map(|c| rust_rag_core::vector_store::Document {
                     id: format!("chunk_{}", c.module_name),
                     chunk: c.clone(),
                     embedding: (0..384)
                         .map(|i| if i % 2 == 0 { 0.7 } else { 0.1 })
                         .collect(),
-                }).collect();
-            store.insert_documents(&remaining).expect("should insert");
-        }
+                })
+                .collect();
+            store.insert_documents(&batch).expect("should insert");
 
-        break; // first batch already populated everything we need for search measurement
+            if chunks.len() > 32 {
+                let remaining: Vec<_> = chunks
+                    .iter()
+                    .skip(32)
+                    .map(|c| rust_rag_core::vector_store::Document {
+                        id: format!("chunk_{}", c.module_name),
+                        chunk: c.clone(),
+                        embedding: (0..384)
+                            .map(|i| if i % 2 == 0 { 0.7 } else { 0.1 })
+                            .collect(),
+                    })
+                    .collect();
+                store.insert_documents(&remaining).expect("should insert");
+            }
+
+            break; // first batch already populated everything we need for search measurement
         }
     }
 

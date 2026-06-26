@@ -352,14 +352,22 @@ fn rag_search_tool(args: &Value, store_path: &std::path::Path) -> Result<Value> 
     let is_batch = args.get("queries").is_some();
 
     if !is_single && !is_batch {
-        return Err(anyhow::anyhow!("Either 'query' or 'queries' must be provided"));
+        return Err(anyhow::anyhow!(
+            "Either 'query' or 'queries' must be provided"
+        ));
     }
 
     if is_single && is_batch {
-        return Err(anyhow::anyhow!("Provide either 'query' or 'queries', not both"));
+        return Err(anyhow::anyhow!(
+            "Provide either 'query' or 'queries', not both"
+        ));
     }
 
-    let schema = if is_single { &single_schema } else { &batch_schema };
+    let schema = if is_single {
+        &single_schema
+    } else {
+        &batch_schema
+    };
     validate_tool_input(schema, args).map_err(|e| anyhow::anyhow!("Invalid arguments: {}", e))?;
 
     let top_k: usize = args["top_k"].as_u64().map(|n| n as usize).unwrap_or(5);
@@ -372,8 +380,14 @@ fn rag_search_tool(args: &Value, store_path: &std::path::Path) -> Result<Value> 
         if !filters_val.is_object() {
             return Err(anyhow::anyhow!("filters must be an object"));
         }
-        let file_extension = filters_val.get("file_extension").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let symbol_kind = filters_val.get("symbol_kind").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let file_extension = filters_val
+            .get("file_extension")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let symbol_kind = filters_val
+            .get("symbol_kind")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
         // crates is ignored for now, but we could validate it's an array if present
         if let Some(crates_val) = filters_val.get("crates") {
             if !crates_val.is_array() {
@@ -450,8 +464,9 @@ fn rag_search_tool(args: &Value, store_path: &std::path::Path) -> Result<Value> 
             let results = store.hybrid_search(&embedding, &query, top_k, 0.7, filters.as_ref())?;
 
             // Convert results to structured JSON format
-            let results_json: Value = serde_json::to_value(&results)
-                .map_err(|e| anyhow::anyhow!("Failed to serialize search results for query {}: {}", i, e))?;
+            let results_json: Value = serde_json::to_value(&results).map_err(|e| {
+                anyhow::anyhow!("Failed to serialize search results for query {}: {}", i, e)
+            })?;
 
             batch_results.push(serde_json::json!({
                 "query": query,
@@ -654,10 +669,7 @@ pub fn rag_file_read_tool(args: &Value) -> Result<Value> {
     let canonical_file = match std::fs::canonicalize(&resolved) {
         Ok(p) => p,
         Err(_) => {
-            return Err(anyhow::anyhow!(
-                "File not found: {}",
-                file_path_str
-            ));
+            return Err(anyhow::anyhow!("File not found: {}", file_path_str));
         }
     };
 
@@ -671,10 +683,7 @@ pub fn rag_file_read_tool(args: &Value) -> Result<Value> {
     let content = match std::fs::read_to_string(&canonical_file) {
         Ok(c) => c,
         Err(e) => {
-            return Err(anyhow::anyhow!(
-                "Failed to read: {}",
-                e
-            ));
+            return Err(anyhow::anyhow!("Failed to read: {}", e));
         }
     };
 
@@ -687,9 +696,13 @@ pub fn rag_file_read_tool(args: &Value) -> Result<Value> {
 
     // Handle line range if specified
     let (final_content, line_start, line_end) = if let (Some(line_start_val), Some(line_end_val)) =
-        (args.get("line_start"), args.get("line_end")) {
+        (args.get("line_start"), args.get("line_end"))
+    {
         let start = line_start_val.as_u64().map(|n| n as usize).unwrap_or(1);
-        let end = line_end_val.as_u64().map(|n| n as usize).unwrap_or(usize::MAX);
+        let end = line_end_val
+            .as_u64()
+            .map(|n| n as usize)
+            .unwrap_or(usize::MAX);
 
         // Validate line range
         if start < 1 {
@@ -711,8 +724,7 @@ pub fn rag_file_read_tool(args: &Value) -> Result<Value> {
             ("".to_string(), start, 0)
         } else {
             // Extract the line range (1-indexed to 0-indexed conversion)
-            let selected_lines: String = lines[start.saturating_sub(1)..actual_end]
-                .join("\n");
+            let selected_lines: String = lines[start.saturating_sub(1)..actual_end].join("\n");
             (selected_lines, start, actual_end)
         }
     } else {
@@ -720,20 +732,17 @@ pub fn rag_file_read_tool(args: &Value) -> Result<Value> {
         (content.clone(), 1, content.lines().count())
     };
 
-    Ok(
-        serde_json::json!({
-            "file_path": file_path_str,
-            "content": final_content,
-            "content_length": final_content.len(),
-            "line_range": {
-                "start": line_start,
-                "end": line_end,
-                "total_lines": content.lines().count()
-            }
-        }),
-    )
+    Ok(serde_json::json!({
+        "file_path": file_path_str,
+        "content": final_content,
+        "content_length": final_content.len(),
+        "line_range": {
+            "start": line_start,
+            "end": line_end,
+            "total_lines": content.lines().count()
+        }
+    }))
 }
-
 
 // ---- Main MCP server loop --------------------------------------------------
 
@@ -822,7 +831,8 @@ pub async fn dispatch_request(
                 // Auto-initialize: set the flag after successful initialize handshake.
                 drop(guard);
                 let g = state.lock().unwrap();
-                g.initialized.store(true, std::sync::atomic::Ordering::SeqCst);
+                g.initialized
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
                 Ok(serde_json::json!({
                     "protocolVersion": MCP_VERSION,
                     "capabilities": { "tools": {} },

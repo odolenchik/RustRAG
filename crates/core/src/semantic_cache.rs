@@ -10,11 +10,11 @@ use std::path::{Path, PathBuf};
 /// Default TTL for cache entries (1 hour in seconds).
 pub const DEFAULT_TTL_SECS: u64 = 3600;
 
-    /// Compute L2 norm of a vector.
-    fn compute_norm(v: &[f32]) -> f32 {
-        let sum_sq: f32 = v.iter().map(|&x| x * x).sum();
-        sum_sq.sqrt()
-    }
+/// Compute L2 norm of a vector.
+fn compute_norm(v: &[f32]) -> f32 {
+    let sum_sq: f32 = v.iter().map(|&x| x * x).sum();
+    sum_sq.sqrt()
+}
 
 /// A single semantic-cache entry: the stored question embedding, the original question,
 /// the LLM answer, and an expiration timestamp (Unix epoch, seconds since 1970-01-01).
@@ -129,7 +129,11 @@ impl SemanticCache {
                     // but threshold is 0.85, so zero won't match; we can continue to save computation
                     continue;
                 }
-                let dot: f32 = embedding.iter().zip(entry.embedding.iter()).map(|(a, b)| a * b).sum();
+                let dot: f32 = embedding
+                    .iter()
+                    .zip(entry.embedding.iter())
+                    .map(|(a, b)| a * b)
+                    .sum();
                 let sim = dot / (query_norm * entry.embedding_norm);
                 if sim > threshold && sim > best_sim {
                     best_sim = sim;

@@ -371,7 +371,11 @@ impl VectorStore {
                     if embed_f32.is_empty() {
                         0.0
                     } else {
-                        let dot: f32 = query_vec.iter().zip(embed_f32.iter()).map(|(q, e)| q * e).sum();
+                        let dot: f32 = query_vec
+                            .iter()
+                            .zip(embed_f32.iter())
+                            .map(|(q, e)| q * e)
+                            .sum();
                         let doc_norm = norms[idx];
                         if doc_norm == 0.0 || query_mag == 0.0 {
                             0.0
@@ -423,7 +427,9 @@ impl VectorStore {
         if scored.len() <= top_k {
             scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
         } else {
-            scored.select_nth_unstable_by(top_k, |a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+            scored.select_nth_unstable_by(top_k, |a, b| {
+                b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal)
+            });
             scored.truncate(top_k);
             scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
         }
@@ -650,7 +656,10 @@ impl SearchFilters {
             }
         }
         if let Some(kind_str) = &self.symbol_kind {
-            let stored_kind_str = doc.get("symbol_kind").and_then(|v| v.as_str()).unwrap_or("");
+            let stored_kind_str = doc
+                .get("symbol_kind")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let stored_kind = match parse_symbol_kind(stored_kind_str) {
                 Ok(k) => k,
                 Err(_) => return false, // Invalid stored symbol kind

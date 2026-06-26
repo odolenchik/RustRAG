@@ -12,9 +12,9 @@ use axum::{
 use futures_util::StreamExt;
 use rust_rag_core::{semantic_cache::SemanticCache, vector_store::VectorStore};
 use rust_rag_llm::ChatBackend;
-use url::Url;
 use std::io::BufRead;
-use std::net::{ToSocketAddrs, SocketAddr};
+use std::net::{SocketAddr, ToSocketAddrs};
+use url::Url;
 
 // logging handled by tracing crate (already imported via #[tracing::instrument])
 use serde::Deserialize;
@@ -274,7 +274,6 @@ impl AppState {
         Ok(())
     }
 
-
     /// Resolve max context size from env override, config file, or default.
     fn resolve_max_context_size() -> usize {
         std::env::var("RUSRAG_MAX_CONTEXT_SIZE")
@@ -500,9 +499,10 @@ async fn status_handler(state: axum::extract::State<AppState>) -> JsonResponse<s
     let total_chunks = match std::fs::File::open(file_path) {
         Ok(file) => {
             let reader = std::io::BufReader::new(file);
-            reader.lines().filter(|line| {
-                line.as_ref().map(|l| !l.trim().is_empty()).unwrap_or(false)
-            }).count()
+            reader
+                .lines()
+                .filter(|line| line.as_ref().map(|l| !l.trim().is_empty()).unwrap_or(false))
+                .count()
         }
         Err(_) => 0,
     };

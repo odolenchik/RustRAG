@@ -1,8 +1,8 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use std::sync::{Arc, Mutex};
-use rust_rag_server::{build_router, AppState};
 use rust_rag_server::mcp::{dispatch_request, err_response, JsonRpcRequest, McpState};
+use rust_rag_server::{build_router, AppState};
+use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 async fn handle_mcp_socket(
@@ -27,7 +27,8 @@ async fn handle_mcp_socket(
                         Ok(batch) => batch, // batch of requests
                         Err(e) => {
                             // Send parse error response
-                            let error_response = err_response(None, -32700, &format!("Parse error: {}", e));
+                            let error_response =
+                                err_response(None, -32700, &format!("Parse error: {}", e));
                             let response_json = serde_json::to_string(&error_response).unwrap();
                             let _ = buf.get_mut().write(response_json.as_bytes()).await?;
                             let _ = buf.get_mut().write_all(b"\n").await?;

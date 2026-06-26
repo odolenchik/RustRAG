@@ -38,7 +38,9 @@ fn with_lock<F, R>(f: F) -> R
 where
     F: FnOnce() -> R,
 {
-    let _guard = ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _guard = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     f()
 }
 
@@ -65,10 +67,15 @@ fn test_rag_file_read_full_file() {
         assert!(result.is_object());
         let obj = result.as_object().unwrap();
 
-        assert_eq!(obj.get("file_path").unwrap().as_str().unwrap(), "src/test.rs");
+        assert_eq!(
+            obj.get("file_path").unwrap().as_str().unwrap(),
+            "src/test.rs"
+        );
         assert!(obj.get("content").unwrap().is_string());
-        assert_eq!(obj.get("content_length").unwrap().as_u64().unwrap() as usize,
-                  obj.get("content").unwrap().as_str().unwrap().len());
+        assert_eq!(
+            obj.get("content_length").unwrap().as_u64().unwrap() as usize,
+            obj.get("content").unwrap().as_str().unwrap().len()
+        );
 
         // Verify line range info for full file
         let line_range = obj.get("line_range").unwrap().as_object().unwrap();
@@ -118,7 +125,10 @@ fn test_rag_file_read_line_range_start_middle() {
         assert!(result.is_object());
         let obj = result.as_object().unwrap();
 
-        assert_eq!(obj.get("file_path").unwrap().as_str().unwrap(), "src/test.rs");
+        assert_eq!(
+            obj.get("file_path").unwrap().as_str().unwrap(),
+            "src/test.rs"
+        );
 
         // Verify line range info
         let line_range = obj.get("line_range").unwrap().as_object().unwrap();
@@ -193,7 +203,7 @@ fn test_rag_file_read_line_range_beyond_file_bounds() {
         std::env::set_var("RUSRAG_WORKSPACE", dir.path().to_string_lossy().to_string());
 
         // Import the MCP server functions
-        use rust_rag_server::mcp::{rag_file_read_tool};
+        use rust_rag_server::mcp::rag_file_read_tool;
         use serde_json::json;
 
         // Test reading beyond file bounds (start beyond end of file)
@@ -212,7 +222,7 @@ fn test_rag_file_read_line_range_beyond_file_bounds() {
         // Verify line range info - should show empty content
         let line_range = obj.get("line_range").unwrap().as_object().unwrap();
         assert_eq!(line_range.get("start").unwrap().as_u64().unwrap(), 20);
-        assert_eq!(line_range.get("end").unwrap().as_u64().unwrap(), 0);  // Adjusted to 0 when start > total
+        assert_eq!(line_range.get("end").unwrap().as_u64().unwrap(), 0); // Adjusted to 0 when start > total
         assert_eq!(line_range.get("total_lines").unwrap().as_u64().unwrap(), 16);
 
         // Verify content is empty
@@ -234,7 +244,7 @@ fn test_rag_file_read_invalid_line_range() {
         std::env::set_var("RUSRAG_WORKSPACE", dir.path().to_string_lossy().to_string());
 
         // Import the MCP server functions
-        use rust_rag_server::mcp::{rag_file_read_tool};
+        use rust_rag_server::mcp::rag_file_read_tool;
         use serde_json::json;
 
         // Test invalid line range (end < start)
@@ -245,7 +255,10 @@ fn test_rag_file_read_invalid_line_range() {
         });
 
         let result = rag_file_read_tool(&args);
-        assert!(result.is_err(), "Should return error for invalid line range");
+        assert!(
+            result.is_err(),
+            "Should return error for invalid line range"
+        );
 
         // Clean up
         std::env::remove_var("RUSRAG_WORKSPACE");
@@ -261,7 +274,7 @@ fn test_rag_file_read_line_start_less_than_one() {
         std::env::set_var("RUSRAG_WORKSPACE", dir.path().to_string_lossy().to_string());
 
         // Import the MCP server functions
-        use rust_rag_server::mcp::{rag_file_read_tool};
+        use rust_rag_server::mcp::rag_file_read_tool;
         use serde_json::json;
 
         // Test invalid line start (< 1)
@@ -288,7 +301,7 @@ fn test_rag_file_read_backward_compatibility() {
         std::env::set_var("RUSRAG_WORKSPACE", dir.path().to_string_lossy().to_string());
 
         // Import the MCP server functions
-        use rust_rag_server::mcp::{rag_file_read_tool};
+        use rust_rag_server::mcp::rag_file_read_tool;
         use serde_json::json;
 
         // Test with old format (no line range parameters) - should still work
@@ -303,7 +316,10 @@ fn test_rag_file_read_backward_compatibility() {
         assert!(result.is_object());
         let obj = result.as_object().unwrap();
 
-        assert_eq!(obj.get("file_path").unwrap().as_str().unwrap(), "src/test.rs");
+        assert_eq!(
+            obj.get("file_path").unwrap().as_str().unwrap(),
+            "src/test.rs"
+        );
         assert!(obj.get("content").unwrap().is_string());
 
         // Verify line range info shows full file

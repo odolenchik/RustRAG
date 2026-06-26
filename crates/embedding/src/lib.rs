@@ -9,7 +9,6 @@
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fmt::Write as FmtWrite;
