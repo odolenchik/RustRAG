@@ -1389,9 +1389,7 @@ fn test_bm25_dissimilar_query_ranks_low() {
     // With pure BM25 (alpha=0), the doc containing "network" should rank higher
     if results[0].file_path.display().to_string() != "network.rs" {
         // If ranking differs, at least verify that network.rs has a non-zero score from BM25
-        let network_result = results
-            .iter()
-            .find(|r| r.file_path == PathBuf::from("network.rs"));
+        let network_result = results.iter().find(|r| r.file_path == *"network.rs");
         assert!(network_result.is_some(), "network.rs should be in results");
     }
 

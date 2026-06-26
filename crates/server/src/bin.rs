@@ -21,18 +21,18 @@ async fn handle_mcp_socket(
                 }
 
                 // Parse single request or batch.
-                let requests: Vec<JsonRpcRequest> = match serde_json::from_str(&trimmed) {
+                let requests: Vec<JsonRpcRequest> = match serde_json::from_str(trimmed) {
                     Ok(req) => vec![req], // single request
-                    Err(_) => match serde_json::from_str::<Vec<JsonRpcRequest>>(&trimmed) {
+                    Err(_) => match serde_json::from_str::<Vec<JsonRpcRequest>>(trimmed) {
                         Ok(batch) => batch, // batch of requests
                         Err(e) => {
                             // Send parse error response
                             let error_response =
                                 err_response(None, -32700, &format!("Parse error: {}", e));
                             let response_json = serde_json::to_string(&error_response).unwrap();
-                            let _ = buf.get_mut().write(response_json.as_bytes()).await?;
-                            let _ = buf.get_mut().write_all(b"\n").await?;
-                            let _ = buf.get_mut().flush().await?;
+                            buf.get_mut().write_all(response_json.as_bytes()).await?;
+                            buf.get_mut().write_all(b"\n").await?;
+                            buf.get_mut().flush().await?;
                             continue;
                         }
                     },
@@ -50,14 +50,14 @@ async fn handle_mcp_socket(
                 // Send response(s)
                 if responses.len() == 1 {
                     let response_json = serde_json::to_string(&responses[0]).unwrap();
-                    let _ = buf.get_mut().write_all(response_json.as_bytes()).await?;
-                    let _ = buf.get_mut().write_all(b"\n").await?;
+                    buf.get_mut().write_all(response_json.as_bytes()).await?;
+                    buf.get_mut().write_all(b"\n").await?;
                 } else {
                     let response_json = serde_json::to_string(&responses).unwrap();
-                    let _ = buf.get_mut().write_all(response_json.as_bytes()).await?;
-                    let _ = buf.get_mut().write_all(b"\n").await?;
+                    buf.get_mut().write_all(response_json.as_bytes()).await?;
+                    buf.get_mut().write_all(b"\n").await?;
                 }
-                let _ = buf.get_mut().flush().await?;
+                buf.get_mut().flush().await?;
             }
             Err(_) => break,
         }

@@ -443,9 +443,9 @@ fn enforce_auth(
         return None;
     }
 
-    let expected = match api_key {
-        Some(key) => key.as_str(),
-        None => return None, // no API key configured — auth disabled globally
+    let expected = {
+        let key = api_key.as_ref()?.as_str();
+        key
     };
 
     let provided = extract_bearer_token(headers);

@@ -479,7 +479,7 @@ impl VectorStore {
                 let diff = (vector_score - bm25_score).abs();
                 let agreement = 1.0 - diff.clamp(0.0, 1.0);
                 // Boost confidence by up to 0.2 based on agreement
-                confidence = confidence + (agreement * 0.2);
+                confidence += agreement * 0.2;
                 // Ensure confidence stays in [0, 1] range
                 confidence = confidence.clamp(0.0, 1.0);
             }

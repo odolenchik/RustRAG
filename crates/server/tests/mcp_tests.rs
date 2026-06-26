@@ -53,7 +53,7 @@ fn test_rag_file_read_full_file() {
         std::env::set_var("RUSRAG_WORKSPACE", dir.path().to_string_lossy().to_string());
 
         // Import the MCP server functions
-        use rust_rag_server::mcp::{rag_file_read_tool, McpState};
+        use rust_rag_server::mcp::rag_file_read_tool;
         use serde_json::json;
 
         // Test reading full file without line range

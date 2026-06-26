@@ -257,14 +257,12 @@ fn validate_tool_input(schema: &Value, args: &Value) -> Result<(), String> {
                                 ));
                             }
                         }
-                        "boolean" => {
-                            if !value.is_boolean() {
-                                return Err(format!(
-                                    "Field '{}' expected boolean, got {}",
-                                    key,
-                                    type_name(value)
-                                ));
-                            }
+                        "boolean" if !value.is_boolean() => {
+                            return Err(format!(
+                                "Field '{}' expected boolean, got {}",
+                                key,
+                                type_name(value)
+                            ));
                         }
                         _ => {}
                     }
@@ -594,7 +592,7 @@ fn rag_workspace_info_tool(args: &Value) -> Value {
                             Value::String(if rc.chars().count() > 2000 {
                                 format!(
                                     "{}\n... (truncated)",
-                                    &rc.chars().take(2000).collect::<String>()
+                                    rc.chars().take(2000).collect::<String>()
                                 )
                             } else {
                                 rc

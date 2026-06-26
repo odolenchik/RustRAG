@@ -174,13 +174,13 @@ impl From<std::io::Error> for RagCoreError {
 
 impl From<std::time::SystemTimeError> for RagCoreError {
     fn from(err: std::time::SystemTimeError) -> Self {
-        RagCoreError::Io(std::io::Error::new(std::io::ErrorKind::Other, err))
+        RagCoreError::Io(std::io::Error::other(err))
     }
 }
 
 impl From<std::fmt::Error> for RagCoreError {
     fn from(err: std::fmt::Error) -> Self {
-        RagCoreError::Io(std::io::Error::new(std::io::ErrorKind::Other, err))
+        RagCoreError::Io(std::io::Error::other(err))
     }
 }
 

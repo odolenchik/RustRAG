@@ -402,12 +402,10 @@ fn collect_rs_hashes(dir: &Path, files: &mut HashMap<std::path::PathBuf, String>
         if !path.is_file() || path.extension() != Some("rs".as_ref()) {
             continue;
         }
-        match state::IndexState::compute_file_hash(path) {
-            Ok(hash) => {
-                files.insert(path.to_path_buf(), hash);
-            }
-            Err(_) => {} // skip unreadable files
+        if let Ok(hash) = state::IndexState::compute_file_hash(path) {
+            files.insert(path.to_path_buf(), hash);
         }
+        // skip unreadable files
     }
     Ok(())
 }
