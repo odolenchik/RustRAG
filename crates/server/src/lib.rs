@@ -103,7 +103,7 @@ fn sanitize_error(e: &dyn std::fmt::Display) -> String {
     // Truncate to 512 chars to prevent oversized payloads / prompt injection from errors.
     let truncated: String = msg.chars().take(512).collect();
     // Mask internal user paths like `/home/user/.cache/huggingface/...` → `~/.cache/huggingface/...`
-    let masked = truncated.replace(std::env::var("HOME").as_deref().unwrap_or_else(|_| "~"), "~");
+    let masked = truncated.replace(std::env::var("HOME").as_deref().unwrap_or("~"), "~");
     masked
 }
 
@@ -715,34 +715,34 @@ async fn query_stream_handler(
 ) -> Result<axum::response::Response, (StatusCode, String)> {
     // Enforce Bearer token auth when API key is configured
     if let Some(unauth_status) = enforce_auth(&headers, &state.api_key, "/query/stream") {
-        return Ok(axum::response::Response::builder()
+        return axum::response::Response::builder()
             .status(unauth_status)
             .body(Body::empty())
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?);
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
     }
 
     // Sliding-window rate limit check (per-client IP)
     let client_key = RateLimiter::resolve_key(&headers, "127.0.0.1");
     let allowed = state.rate_limiter.check(&client_key).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     if !allowed {
-        return Ok(axum::response::Response::builder()
+        return axum::response::Response::builder()
             .status(axum::http::StatusCode::TOO_MANY_REQUESTS)
             .body(Body::empty())
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?);
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
     }
 
     // Validate question length to prevent resource exhaustion / prompt injection
     if let Err((_, msg)) = validate_query_length(&params.question, "question") {
         let body = serde_json::to_string(&serde_json::json!({"error": msg})).unwrap_or_default();
-        return Ok(axum::response::Response::builder()
+        return axum::response::Response::builder()
             .status(axum::http::StatusCode::BAD_REQUEST)
             .body(Body::from(body))
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?);
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
     }
 
     // Check semantic cache before doing search + LLM call.
     if let Some(cached) = state.semantic_cache.lookup(&params.question) {
-        return Ok(axum::response::Response::builder()
+        return axum::response::Response::builder()
             .status(axum::http::StatusCode::OK)
             .header("Content-Type", "text/event-stream")
             .header("Cache-Control", "no-cache")
@@ -752,7 +752,7 @@ async fn query_stream_handler(
                     yield Ok::<_, axum::BoxError>(bytes::Bytes::from(chunk.to_vec()));
                 }
             }))
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?);
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
     }
 
     let config = rust_rag_core::config::Config::find().unwrap_or_default();
@@ -761,10 +761,10 @@ async fn query_stream_handler(
     let query_embedding = match rust_rag_core::embedding::embed(&params.question) {
         Ok(v) => v,
         Err(_) => {
-            return Ok(axum::response::Response::builder()
+            return axum::response::Response::builder()
                 .status(axum::http::StatusCode::INTERNAL_SERVER_ERROR)
                 .body(Body::empty())
-                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?);
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
         }
     };
 
@@ -776,10 +776,10 @@ async fn query_stream_handler(
         {
             Ok(r) => r,
             Err(_) => {
-                return Ok(axum::response::Response::builder()
+                return axum::response::Response::builder()
                     .status(axum::http::StatusCode::INTERNAL_SERVER_ERROR)
                     .body(Body::empty())
-                    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?);
+                    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
             }
         };
 
@@ -873,7 +873,7 @@ async fn query_stream_handler(
         });
     }
 
-    Ok(axum::response::Response::builder()
+    axum::response::Response::builder()
         .status(axum::http::StatusCode::OK)
         .header("Content-Type", "text/event-stream")
         .header("Cache-Control", "no-cache")
@@ -885,5 +885,5 @@ async fn query_stream_handler(
                 yield item;
             }
         }))
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
