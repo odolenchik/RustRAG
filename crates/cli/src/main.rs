@@ -1,7 +1,10 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use rust_rag_cli::{
+    ask, ask_json, ask_stream, ask_stream_json, clean_workspace, download_model, index_workspace,
+    reindex_workspace, search_symbol, search_symbol_json, show_info, show_info_json, show_stats,
+};
 use std::env;
-use rust_rag_cli::{index_workspace, reindex_workspace, show_info, show_info_json, clean_workspace, ask, ask_json, ask_stream, ask_stream_json, download_model, search_symbol, search_symbol_json, show_stats};
 
 #[derive(Parser)]
 #[command(name = "rust-rag", about = "Local RAG tool for Rust projects")]

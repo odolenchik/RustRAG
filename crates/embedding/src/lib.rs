@@ -323,11 +323,12 @@ impl EmbedCache {
         writeln!(content, "#model_id={}", Self::model_id())?;
         for (k, v) in &cache {
             let line = serde_json::json!({ "hash": k, "embedding": v });
-            let json_str = serde_json::to_string(&line)
-                .map_err(|e| RagCoreError::Embedding(
+            let json_str = serde_json::to_string(&line).map_err(|e| {
+                RagCoreError::Embedding(
                     format!("Failed to serialize embedding cache entry: {}", e),
-                    Box::new(std::io::Error::other(e))
-                ))?;
+                    Box::new(std::io::Error::other(e)),
+                )
+            })?;
             writeln!(content, "{}", json_str)?;
         }
 

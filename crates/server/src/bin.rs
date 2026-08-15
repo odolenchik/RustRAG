@@ -119,7 +119,9 @@ async fn main() -> Result<()> {
 async fn run_server(port: u16, rate_limit: u32) -> Result<()> {
     let workspace_root = std::env::var("RUSRAG_WORKSPACE")
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
+        .unwrap_or_else(|_| {
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+        });
 
     println!("Starting RustRAG server on port {}", port);
     println!(

@@ -796,7 +796,11 @@ pub async fn dispatch_request(
     // Handle "tools/call" outside the lock since rag_query_tool spawns async work.
     if method == "tools/call" {
         // Clone the path out of the guard so we can release the lock before awaiting.
-        let store_path = state.lock().map_err(|_| anyhow::anyhow!("Lock poisoned"))?.store_path.clone();
+        let store_path = state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Lock poisoned"))?
+            .store_path
+            .clone();
         let result = handle_tools_call(params, &store_path).await;
         return Ok(match result {
             Ok(v) => Some(ok_response(id, v)),

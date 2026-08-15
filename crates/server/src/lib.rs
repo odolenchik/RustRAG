@@ -43,7 +43,10 @@ impl RateLimiter {
     pub fn check(&self, key: &str) -> Result<bool, anyhow::Error> {
         let now = Instant::now();
         let window = std::time::Duration::from_secs(self.window_secs);
-        let mut map = self.clients.lock().map_err(|_| anyhow::anyhow!("lock poisoned"))?;
+        let mut map = self
+            .clients
+            .lock()
+            .map_err(|_| anyhow::anyhow!("lock poisoned"))?;
 
         // Clean up expired entries for this client.
         if let Some(queue) = map.get_mut(key) {
@@ -93,8 +96,12 @@ const DEFAULT_MAX_CONTEXT_SIZE: usize = 12_000;
 
 /// Helper to serialize a value to JSON, returning a HTTP 500 error on failure.
 fn json_string<T: serde::Serialize>(value: &T) -> Result<String, (StatusCode, String)> {
-    serde_json::to_string(value)
-        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".to_string()))
+    serde_json::to_string(value).map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Internal server error".to_string(),
+        )
+    })
 }
 
 /// Sanitize an error message for exposure over HTTP/MCP by truncating long messages and masking internal paths.
@@ -534,7 +541,11 @@ async fn search_handler(
 
     // Sliding-window rate limit check (per-client IP)
     let client_key = RateLimiter::resolve_key(&headers, "127.0.0.1");
-    if !state.rate_limiter.check(&client_key).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))? {
+    if !state
+        .rate_limiter
+        .check(&client_key)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    {
         let json = json_string(&serde_json::json!({"error": "Rate limit exceeded"}))?;
         return Ok((StatusCode::TOO_MANY_REQUESTS, json));
     }
@@ -545,14 +556,15 @@ async fn search_handler(
         return Ok((StatusCode::BAD_REQUEST, json));
     }
 
-    let query_embedding =
-        match rust_rag_core::embedding::embed(&params.query) {
-            Ok(v) => v,
-            Err(e) => {
-                let json = json_string(&serde_json::json!({"error": format!("Embed failed: {}", sanitize_error(&e))}))?;
-                return Ok((StatusCode::INTERNAL_SERVER_ERROR, json));
-            }
-        };
+    let query_embedding = match rust_rag_core::embedding::embed(&params.query) {
+        Ok(v) => v,
+        Err(e) => {
+            let json = json_string(
+                &serde_json::json!({"error": format!("Embed failed: {}", sanitize_error(&e))}),
+            )?;
+            return Ok((StatusCode::INTERNAL_SERVER_ERROR, json));
+        }
+    };
 
     let results =
         state
@@ -566,7 +578,9 @@ async fn search_handler(
             Ok((StatusCode::OK, json))
         }
         Err(e) => {
-            let json = json_string(&serde_json::json!({"error": format!("Search failed: {}", sanitize_error(&e))}))?;
+            let json = json_string(
+                &serde_json::json!({"error": format!("Search failed: {}", sanitize_error(&e))}),
+            )?;
             Ok((StatusCode::INTERNAL_SERVER_ERROR, json))
         }
     }
@@ -587,7 +601,11 @@ async fn query_handler(
 
     // Sliding-window rate limit check (per-client IP)
     let client_key = RateLimiter::resolve_key(&headers, "127.0.0.1");
-    if !state.rate_limiter.check(&client_key).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))? {
+    if !state
+        .rate_limiter
+        .check(&client_key)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    {
         let json = json_string(&serde_json::json!({"error": "Rate limit exceeded"}))?;
         return Ok((StatusCode::TOO_MANY_REQUESTS, json));
     }
@@ -611,28 +629,30 @@ async fn query_handler(
         return Ok((StatusCode::OK, json));
     }
 
-    let query_embedding =
-        match rust_rag_core::embedding::embed(&body.question) {
-            Ok(v) => v,
-            Err(e) => {
-                let json = json_string(&serde_json::json!({"error": format!("Embed failed: {}", sanitize_error(&e))}))?;
-                return Ok((StatusCode::INTERNAL_SERVER_ERROR, json));
-            }
-        };
+    let query_embedding = match rust_rag_core::embedding::embed(&body.question) {
+        Ok(v) => v,
+        Err(e) => {
+            let json = json_string(
+                &serde_json::json!({"error": format!("Embed failed: {}", sanitize_error(&e))}),
+            )?;
+            return Ok((StatusCode::INTERNAL_SERVER_ERROR, json));
+        }
+    };
 
     let results = state
         .0
         .store
         .hybrid_search(&query_embedding, &body.question, top_k, 0.7, None);
 
-    let results_vec: Vec<_> =
-        match results {
-            Ok(r) => r,
-            Err(e) => {
-                let json = json_string(&serde_json::json!({"error": format!("Search failed: {}", sanitize_error(&e))}))?;
-                return Ok((StatusCode::INTERNAL_SERVER_ERROR, json));
-            }
-        };
+    let results_vec: Vec<_> = match results {
+        Ok(r) => r,
+        Err(e) => {
+            let json = json_string(
+                &serde_json::json!({"error": format!("Search failed: {}", sanitize_error(&e))}),
+            )?;
+            return Ok((StatusCode::INTERNAL_SERVER_ERROR, json));
+        }
+    };
 
     // Build context from search results and trim to max_context_size
     let raw_context: String = results_vec
@@ -723,7 +743,10 @@ async fn query_stream_handler(
 
     // Sliding-window rate limit check (per-client IP)
     let client_key = RateLimiter::resolve_key(&headers, "127.0.0.1");
-    let allowed = state.rate_limiter.check(&client_key).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let allowed = state
+        .rate_limiter
+        .check(&client_key)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     if !allowed {
         return axum::response::Response::builder()
             .status(axum::http::StatusCode::TOO_MANY_REQUESTS)
@@ -752,7 +775,7 @@ async fn query_stream_handler(
                     yield Ok::<_, axum::BoxError>(bytes::Bytes::from(chunk.to_vec()));
                 }
             }))
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
     }
 
     let config = rust_rag_core::config::Config::find().unwrap_or_default();
@@ -823,7 +846,9 @@ async fn query_stream_handler(
                 Ok(c) => c,
                 Err(e) => {
                     let err_sse = format!("event: error\ndata: {}\n\n", e);
-                    let _ = tx_clone.send(Ok(bytes::Bytes::from(err_sse.into_bytes()))).await;
+                    let _ = tx_clone
+                        .send(Ok(bytes::Bytes::from(err_sse.into_bytes())))
+                        .await;
                     return;
                 }
             };

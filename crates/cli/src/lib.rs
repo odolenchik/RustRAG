@@ -675,7 +675,11 @@ pub fn clean_workspace(workspace_path: Option<&str>) -> Result<()> {
 }
 
 /// Search for a symbol by name in the indexed workspace.
-pub fn search_symbol(query: &str, workspace_root: Option<&str>, kind: Option<String>) -> Result<()> {
+pub fn search_symbol(
+    query: &str,
+    workspace_root: Option<&str>,
+    kind: Option<String>,
+) -> Result<()> {
     let ws = if let Some(path) = workspace_root {
         std::path::PathBuf::from(path)
     } else {
@@ -702,9 +706,13 @@ pub fn search_symbol(query: &str, workspace_root: Option<&str>, kind: Option<Str
         let module_name = doc["module_name"].as_str().unwrap_or("");
         let text = doc["text"].as_str().unwrap_or("");
 
-        let matches_query = module_name.to_lowercase().contains(&query.to_lowercase()) || text.contains(query);
+        let matches_query =
+            module_name.to_lowercase().contains(&query.to_lowercase()) || text.contains(query);
         let matches_kind = if let Some(ref k) = kind {
-            let doc_kind = doc.get("symbol_kind").and_then(|v| v.as_str()).unwrap_or("");
+            let doc_kind = doc
+                .get("symbol_kind")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             doc_kind.to_lowercase() == k.to_lowercase()
         } else {
             true
@@ -761,7 +769,11 @@ pub fn search_symbol(query: &str, workspace_root: Option<&str>, kind: Option<Str
 }
 
 /// Search for a symbol by name in the indexed workspace with JSON output.
-pub fn search_symbol_json(query: &str, workspace_root: Option<&str>, kind: Option<String>) -> Result<()> {
+pub fn search_symbol_json(
+    query: &str,
+    workspace_root: Option<&str>,
+    kind: Option<String>,
+) -> Result<()> {
     let ws = if let Some(path) = workspace_root {
         std::path::PathBuf::from(path)
     } else {
@@ -788,9 +800,13 @@ pub fn search_symbol_json(query: &str, workspace_root: Option<&str>, kind: Optio
         let module_name = doc["module_name"].as_str().unwrap_or("");
         let text = doc["text"].as_str().unwrap_or("");
 
-        let matches_query = module_name.to_lowercase().contains(&query.to_lowercase()) || text.contains(query);
+        let matches_query =
+            module_name.to_lowercase().contains(&query.to_lowercase()) || text.contains(query);
         let matches_kind = if let Some(ref k) = kind {
-            let doc_kind = doc.get("symbol_kind").and_then(|v| v.as_str()).unwrap_or("");
+            let doc_kind = doc
+                .get("symbol_kind")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             doc_kind.to_lowercase() == k.to_lowercase()
         } else {
             true
