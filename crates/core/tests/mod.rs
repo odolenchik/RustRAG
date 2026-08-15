@@ -1,5 +1,6 @@
 use rust_rag_core::indexer::{Chunk, SymbolKind};
 use std::path::PathBuf;
+use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
 // Indexer tests — parse_and_extract via a minimal workspace fixture
@@ -2271,4 +2272,96 @@ fn test_eval_diagnostics_no_nested_chunks() {
 }
 
 // Re-export HashMap for tests that need it.
-use std::collections::HashMap;
+
+
+// ---------------------------------------------------------------------------
+// Property-based tests using proptest
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod proptest_tests {
+    use proptest::prelude::*;
+
+    // Test file hash computation consistency
+    proptest! {
+        #[test]
+        fn test_file_hash_deterministic(data in any::<Vec<u8>>()) {
+            use rust_rag_state::IndexState;
+            
+            // Create two temp files with the same data
+            let dir1 = tempfile::tempdir().unwrap();
+            let file1 = dir1.path().join("test_file.txt");
+            std::fs::write(&file1, &data).unwrap();
+            
+            let dir2 = tempfile::tempdir().unwrap();
+            let file2 = dir2.path().join("test_file.txt");
+            std::fs::write(&file2, &data).unwrap();
+            
+            // Hashes should be identical
+            let hash1 = IndexState::compute_file_hash(&file1).unwrap();
+            let hash2 = IndexState::compute_file_hash(&file2).unwrap();
+            
+            prop_assert_eq!(hash1, hash2);
+        }
+    }
+
+    // Test that different files produce different hashes (with very high probability)
+    proptest! {
+        #[test]
+        fn test_file_hash_different_files(
+            data1 in any::<Vec<u8>>(),
+            data2 in any::<Vec<u8>>()
+        ) {
+            use rust_rag_state::IndexState;
+            
+            // Filter out the extremely unlikely case where random data is identical
+            prop_assume!(data1 != data2);
+            
+            // Create two temp files with different data
+            let dir1 = tempfile::tempdir().unwrap();
+            let file1 = dir1.path().join("test_file1.txt");
+            std::fs::write(&file1, &data1).unwrap();
+            
+            let dir2 = tempfile::tempdir().unwrap();
+            let file2 = dir2.path().join("test_file2.txt");
+            std::fs::write(&file2, &data2).unwrap();
+            
+            // With very high probability, hashes should be different
+            let hash1 = IndexState::compute_file_hash(&file1).unwrap();
+            let hash2 = IndexState::compute_file_hash(&file2).unwrap();
+            
+            // This assertion could theoretically fail if we get a hash collision,
+            // but with SHA-256 and random data, this is astronomically unlikely
+            prop_assert!(hash1 != hash2);
+        }
+    }
+
+    // Test chunk line range validity
+    proptest! {
+        #[test]
+        fn test_chunk_line_range_valid(
+            start in 0..1000usize,
+            length in 0..100usize
+        ) {
+            use rust_rag_core::indexer::Chunk;
+            use std::path::PathBuf;
+            
+            let end = start + length;
+            let chunk = Chunk {
+                file_path: PathBuf::from("test.rs"),
+                line_start: start,
+                line_end: end,
+                module_name: "test".into(),
+                symbol_kind: rust_rag_core::indexer::SymbolKind::Function,
+                text: "placeholder".repeat(length.max(1)),
+                max_nesting_depth: Some(0),
+            };
+            
+            // Line ranges should be valid
+            prop_assert!(chunk.line_start <= chunk.line_end);
+            prop_assert!(chunk.line_end >= chunk.line_start);
+            // Text length should be reasonable (not testing exact correlation here)
+            prop_assert!(!chunk.text.is_empty());
+        }
+    }
+}

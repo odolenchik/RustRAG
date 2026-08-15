@@ -5,7 +5,6 @@ use rust_rag_llm::ChatBackend;
 use std::collections::HashMap;
 use std::io::Write as _;
 use std::path::Path;
-use std::time::Instant;
 
 /// Run the retrieval pipeline: embed query → hybrid search → build context string.
 /// Also prints result headers to stdout (for `ask` and `ask_stream`).
@@ -205,11 +204,7 @@ pub fn index_workspace(path: &str) -> Result<()> {
         anyhow::bail!("Workspace path does not exist: {}", path);
     }
 
-    let quiet = std::env::var("RUST_RAG_QUIET").is_ok();
-
-    if !quiet {
-        println!("Indexing workspace at: {}", path);
-    }
+    println!("Indexing workspace at: {}", path);
 
     // Step 1: Collect all .rs file paths and compute their hashes.
     let store_path = workspace_root.join(".rustrag");
@@ -217,23 +212,19 @@ pub fn index_workspace(path: &str) -> Result<()> {
     let total_files = current_files.len();
 
     if total_files == 0 {
-        if !quiet {
-            println!("No Rust source files found in workspace.");
-        }
+        println!("No Rust source files found in workspace.");
         return Ok(());
     }
 
     // Step 2: Load existing state (if any).
-    let mut saved_state = state::IndexState::load(&store_path)?;
+    let saved_state = state::IndexState::load(&store_path)?;
 
     // Step 3: Determine which files need re-indexing.
     let (new_files, changed_files, removed_chunk_ids) = saved_state.compare(&current_files);
 
     // If nothing has changed since last index, skip.
     if new_files.is_empty() && changed_files.is_empty() {
-        if !quiet {
-            println!("No changes detected. Index is up to date.");
-        }
+        println!("No changes detected. Index is up to date.");
         return Ok(());
     }
 
@@ -243,13 +234,11 @@ pub fn index_workspace(path: &str) -> Result<()> {
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
 
-    if !quiet {
-        println!(
-            "Detected {} new/changed files out of {} total. Re-indexing only changed files.",
-            new_files.len(),
-            total_files
-        );
-    }
+    println!(
+        "Detected {} new/changed files out of {} total. Re-indexing only changed files.",
+        new_files.len(),
+        total_files
+    );
 
     // Step 4: Parse AST for changed/new files and build chunks.
     let mut all_chunks: Vec<rust_rag_core::indexer::Chunk> = Vec::new();
@@ -264,9 +253,7 @@ pub fn index_workspace(path: &str) -> Result<()> {
     rust_rag_core::indexer::apply_overlap(&mut all_chunks);
 
     let total_reindexed = all_chunks.len();
-    if !quiet {
-        println!("Parsed {} chunks from changed files.", total_reindexed);
-    }
+    println!("Parsed {} chunks from changed files.", total_reindexed);
 
     if all_chunks.is_empty() {
         return Ok(());
@@ -274,7 +261,6 @@ pub fn index_workspace(path: &str) -> Result<()> {
 
     // Step 5: Embed only the re-chunked text using cache.
     let texts: Vec<&str> = all_chunks.iter().map(|c| c.text.as_str()).collect();
-    let embed_start = Instant::now();
     let embed_cache = rust_rag_core::embedding::EmbedCache::open(&store_path);
     let cached = embed_cache.lookup(&texts)?;
     let hit_count = cached.iter().filter_map(|x| x.clone()).count();
@@ -291,13 +277,11 @@ pub fn index_workspace(path: &str) -> Result<()> {
         .collect();
 
     if !uncached_indices.is_empty() {
-        if !quiet {
-            println!(
-                "  {} already cached, embedding {} new chunks...",
-                hit_count,
-                uncached_indices.len()
-            );
-        }
+        println!(
+            "  {} already cached, embedding {} new chunks...",
+            hit_count,
+            uncached_indices.len()
+        );
         let uncached_texts: Vec<&str> = uncached_indices.iter().map(|&i| texts[i]).collect();
         let new_embeddings = rust_rag_core::embedding::embed_batch(&uncached_texts)?;
         for (j, idx) in uncached_indices.into_iter().enumerate() {
@@ -312,9 +296,6 @@ pub fn index_workspace(path: &str) -> Result<()> {
         &all_embeddings.iter().cloned().collect::<Vec<_>>(),
         &mut 0,
     );
-
-    let embedding_time = embed_start.elapsed().as_secs();
-    saved_state.set_embedding_time(embedding_time);
 
     // Step 6: Build documents and remove stale entries from index.
     let mut new_documents = Vec::new();
@@ -352,12 +333,10 @@ pub fn index_workspace(path: &str) -> Result<()> {
     stale_ids.extend(removed_chunk_ids);
 
     if !stale_ids.is_empty() {
-        if !quiet {
-            println!(
-                "Removing {} stale document(s) from index...",
-                stale_ids.len()
-            );
-        }
+        println!(
+            "Removing {} stale document(s) from index...",
+            stale_ids.len()
+        );
         store.remove_documents(&stale_ids)?;
     } else if new_files.is_empty() && changed_files.is_empty() {
         println!("No changes detected. Index is up to date.");
@@ -374,12 +353,10 @@ pub fn index_workspace(path: &str) -> Result<()> {
     updated_state.update_files(current_files);
     updated_state.save(&store_path)?;
 
-    if !quiet {
-        println!(
-            "Index complete. {} files processed, {} chunks re-indexed.",
-            total_files, total_reindexed
-        );
-    }
+    println!(
+        "Index complete. {} files processed, {} chunks re-indexed.",
+        total_files, total_reindexed
+    );
 
     Ok(())
 }
@@ -435,76 +412,18 @@ fn collect_rs_hashes(dir: &Path, files: &mut HashMap<std::path::PathBuf, String>
 
 /// Run the ask pipeline: retrieve relevant chunks and generate LLM answer.
 pub fn ask(query: &str, workspace_root: Option<&str>) -> Result<()> {
-    // Auto-reindex if enabled
-    let ws = if let Some(p) = workspace_root {
-        std::path::PathBuf::from(p)
-    } else {
-        std::env::current_dir().expect("Failed to get current directory")
-    };
-    if let Ok(cfg) = rust_rag_core::config::Config::load(&ws) {
-        if cfg.auto_reindex {
-            let _ = index_workspace(ws.to_str().unwrap());
-        }
-    }
-    let result = run_ask_impl(query, workspace_root, OutputMode::Text);
-    // Update LLM request count in state
-    if result.is_ok() {
-        if let Ok(mut state) = state::IndexState::load(&ws.join(".rustrag")) {
-            state.increment_llm_requests();
-            let _ = state.save(&ws.join(".rustrag"));
-        }
-    }
-    result?;
+    run_ask_impl(query, workspace_root, OutputMode::Text)?;
     Ok(())
 }
 
 /// Run the ask pipeline with streaming output.
 pub async fn ask_stream(query: &str, workspace_root: Option<&str>) -> Result<()> {
-    // Auto-reindex if enabled
-    let ws = if let Some(p) = workspace_root {
-        std::path::PathBuf::from(p)
-    } else {
-        std::env::current_dir().expect("Failed to get current directory")
-    };
-    if let Ok(cfg) = rust_rag_core::config::Config::load(&ws) {
-        if cfg.auto_reindex {
-            let _ = index_workspace(ws.to_str().unwrap());
-        }
-    }
-    let result = run_ask_stream_impl(query, workspace_root).await;
-    // Update LLM request count in state
-    if result.is_ok() {
-        if let Ok(mut state) = state::IndexState::load(&ws.join(".rustrag")) {
-            state.increment_llm_requests();
-            let _ = state.save(&ws.join(".rustrag"));
-        }
-    }
-    result?;
-    Ok(())
+    run_ask_stream_impl(query, workspace_root).await
 }
 
 /// Run the ask pipeline with JSON output.
 pub fn ask_json(query: &str, workspace_root: Option<&str>) -> Result<()> {
-    // Auto-reindex if enabled
-    let ws = if let Some(p) = workspace_root {
-        std::path::PathBuf::from(p)
-    } else {
-        std::env::current_dir().expect("Failed to get current directory")
-    };
-    if let Ok(cfg) = rust_rag_core::config::Config::load(&ws) {
-        if cfg.auto_reindex {
-            let _ = index_workspace(ws.to_str().unwrap());
-        }
-    }
-    let result = run_ask_impl(query, workspace_root, OutputMode::Json);
-    // Update LLM request count in state
-    if result.is_ok() {
-        if let Ok(mut state) = state::IndexState::load(&ws.join(".rustrag")) {
-            state.increment_llm_requests();
-            let _ = state.save(&ws.join(".rustrag"));
-        }
-    }
-    result?;
+    run_ask_impl(query, workspace_root, OutputMode::Json)?;
     Ok(())
 }
 
@@ -515,46 +434,21 @@ async fn _ask_stream_json_internal(query: &str, workspace_root: Option<&str>) ->
 
 // Re-export as public for backward compatibility
 pub async fn ask_stream_json(query: &str, workspace_root: Option<&str>) -> Result<()> {
-    // Auto-reindex if enabled
-    let ws = if let Some(p) = workspace_root {
-        std::path::PathBuf::from(p)
-    } else {
-        std::env::current_dir().expect("Failed to get current directory")
-    };
-    if let Ok(cfg) = rust_rag_core::config::Config::load(&ws) {
-        if cfg.auto_reindex {
-            let _ = index_workspace(ws.to_str().unwrap());
-        }
-    }
-    let result = _ask_stream_json_internal(query, workspace_root).await;
-    // Update LLM request count in state
-    if result.is_ok() {
-        if let Ok(mut state) = state::IndexState::load(&ws.join(".rustrag")) {
-            state.increment_llm_requests();
-            let _ = state.save(&ws.join(".rustrag"));
-        }
-    }
-    result?;
-    Ok(())
+    _ask_stream_json_internal(query, workspace_root).await
 }
 
 /// Re-index a workspace: delete old index, then run full indexing pipeline.
 pub fn reindex_workspace(path: &str) -> Result<()> {
     let workspace_root = std::path::PathBuf::from(path);
-    let quiet = std::env::var("RUST_RAG_QUIET").is_ok();
 
     // Remove any existing index first
     let store_path = workspace_root.join(".rustrag");
     if store_path.exists() {
-        if !quiet {
-            println!("Removing old index at {}", store_path.display());
-        }
+        println!("Removing old index at {}", store_path.display());
         std::fs::remove_dir_all(&store_path)?;
     }
 
-    if !quiet {
-        println!("Re-indexing workspace at: {}", path);
-    }
+    println!("Re-indexing workspace at: {}", path);
     index_workspace(path)
 }
 
@@ -675,7 +569,7 @@ pub fn clean_workspace(workspace_path: Option<&str>) -> Result<()> {
 }
 
 /// Search for a symbol by name in the indexed workspace.
-pub fn search_symbol(query: &str, workspace_root: Option<&str>, kind: Option<String>) -> Result<()> {
+pub fn search_symbol(query: &str, workspace_root: Option<&str>) -> Result<()> {
     let ws = if let Some(path) = workspace_root {
         std::path::PathBuf::from(path)
     } else {
@@ -702,14 +596,7 @@ pub fn search_symbol(query: &str, workspace_root: Option<&str>, kind: Option<Str
         let module_name = doc["module_name"].as_str().unwrap_or("");
         let text = doc["text"].as_str().unwrap_or("");
 
-        let matches_query = module_name.to_lowercase().contains(&query.to_lowercase()) || text.contains(query);
-        let matches_kind = if let Some(ref k) = kind {
-            let doc_kind = doc.get("symbol_kind").and_then(|v| v.as_str()).unwrap_or("");
-            doc_kind.to_lowercase() == k.to_lowercase()
-        } else {
-            true
-        };
-        if matches_query && matches_kind {
+        if module_name.to_lowercase().contains(&query.to_lowercase()) || text.contains(query) {
             matches.push(doc);
         }
     }
@@ -761,7 +648,7 @@ pub fn search_symbol(query: &str, workspace_root: Option<&str>, kind: Option<Str
 }
 
 /// Search for a symbol by name in the indexed workspace with JSON output.
-pub fn search_symbol_json(query: &str, workspace_root: Option<&str>, kind: Option<String>) -> Result<()> {
+pub fn search_symbol_json(query: &str, workspace_root: Option<&str>) -> Result<()> {
     let ws = if let Some(path) = workspace_root {
         std::path::PathBuf::from(path)
     } else {
@@ -788,14 +675,7 @@ pub fn search_symbol_json(query: &str, workspace_root: Option<&str>, kind: Optio
         let module_name = doc["module_name"].as_str().unwrap_or("");
         let text = doc["text"].as_str().unwrap_or("");
 
-        let matches_query = module_name.to_lowercase().contains(&query.to_lowercase()) || text.contains(query);
-        let matches_kind = if let Some(ref k) = kind {
-            let doc_kind = doc.get("symbol_kind").and_then(|v| v.as_str()).unwrap_or("");
-            doc_kind.to_lowercase() == k.to_lowercase()
-        } else {
-            true
-        };
-        if matches_query && matches_kind {
+        if module_name.to_lowercase().contains(&query.to_lowercase()) || text.contains(query) {
             matches.push(doc);
         }
     }
@@ -854,12 +734,6 @@ pub fn show_stats(workspace_path: Option<&str>, json_output: bool) -> Result<()>
         return Ok(());
     }
 
-    // Load state for metrics
-    let state_path = store_path.join("index_state.json");
-    let state = state::IndexState::load(&state_path).unwrap_or_default();
-    let embedding_time = state.embedding_time_seconds;
-    let llm_requests = state.llm_requests;
-
     // Load documents from the vector store and reconstruct Chunk objects.
     let content = std::fs::read_to_string(store_path.join("index.jsonl"))?;
     let mut chunks: Vec<rust_rag_core::indexer::Chunk> = Vec::new();
@@ -912,8 +786,6 @@ pub fn show_stats(workspace_path: Option<&str>, json_output: bool) -> Result<()>
             "avg_lines_per_chunk": diags.avg_lines_per_chunk,
             "median_overlap_between_chunks": diags.median_overlap_between_chunks,
             "chunks_with_parent_context": diags.chunks_with_parent_context,
-            "embedding_time_seconds": embedding_time,
-            "llm_requests": llm_requests,
             "kinds_breakdown": kinds_json,
         });
 
@@ -934,8 +806,6 @@ pub fn show_stats(workspace_path: Option<&str>, json_output: bool) -> Result<()>
             "  Chunks with parent context (overlap separator): {}",
             diags.chunks_with_parent_context
         );
-        println!("  Embedding time (s): {}", embedding_time);
-        println!("  LLM requests: {}", llm_requests);
 
         if !diags.kinds_breakdown.is_empty() {
             println!("\n  Symbol kind breakdown:");

@@ -1,13 +1,9 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use std::env;
-use rust_rag_cli::{index_workspace, reindex_workspace, show_info, show_info_json, clean_workspace, ask, ask_json, ask_stream, ask_stream_json, download_model, search_symbol, search_symbol_json, show_stats};
 
 #[derive(Parser)]
 #[command(name = "rust-rag", about = "Local RAG tool for Rust projects")]
 struct Cli {
-    #[arg(long, global = true, default_value = "false")]
-    quiet: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -37,9 +33,6 @@ enum Command {
 
     /// Show chunking diagnostics (symbol kind breakdown, overlap stats)
     Stats(StatsArgs),
-
-    /// Show version information
-    Version,
 }
 
 #[derive(clap::Args)]
@@ -67,10 +60,6 @@ struct InfoArgs {
     /// Output results as JSON
     #[arg(long, default_value = "false")]
     json: bool,
-
-    /// Show statistics (indexed files, embedding time, LLM requests)
-    #[arg(long)]
-    stats: bool,
 }
 
 #[derive(clap::Args)]
@@ -107,10 +96,6 @@ struct SymbolArgs {
     #[arg(short, long)]
     path: Option<String>,
 
-    /// Filter results by symbol kind (struct, fn, impl, mod, etc.)
-    #[arg(long)]
-    kind: Option<String>,
-
     /// Output results as JSON
     #[arg(long, default_value = "false")]
     json: bool,
@@ -145,12 +130,9 @@ fn resolve_workspace_path(path_arg: Option<&str>) -> Result<Option<std::path::Pa
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli = Cli::parse();
-    if cli.quiet {
-        env::set_var("RUST_LOG", "error");
-        env::set_var("RUST_RAG_QUIET", "1");
-    }
     init_tracing();
+
+    let cli = Cli::parse();
 
     match cli.command {
         Command::Index(args) => {
@@ -163,40 +145,38 @@ async fn main() -> Result<()> {
                     std::fs::remove_dir_all(&store_path)?;
                 }
             }
-            index_workspace(workspace.to_str().unwrap())?;
+            rust_rag_cli::index_workspace(workspace.to_str().unwrap())
         }
         Command::Reindex(args) => {
             let workspace = std::fs::canonicalize(&args.path)
                 .map_err(|e| anyhow::anyhow!("Invalid workspace path '{}': {}", args.path, e))?;
-            reindex_workspace(workspace.to_str().unwrap())?;
+            rust_rag_cli::reindex_workspace(workspace.to_str().unwrap())
         }
         Command::Info(args) => {
             let path: Option<String> = resolve_workspace_path(args.path.as_deref())?
                 .map(|p| p.to_string_lossy().to_string());
-            if args.stats {
-                show_stats(path.as_deref(), args.json)?;
-            } else if args.json {
-                show_info_json(path.as_deref())?;
+            if args.json {
+                rust_rag_cli::show_info_json(path.as_deref())
             } else {
-                show_info(path.as_deref())?;
+                rust_rag_cli::show_info(path.as_deref())
             }
         }
         Command::Clean(args) => {
             let path: Option<String> = resolve_workspace_path(args.path.as_deref())?
                 .map(|p| p.to_string_lossy().to_string());
-            clean_workspace(path.as_deref())?;
+            rust_rag_cli::clean_workspace(path.as_deref())
         }
         Command::Ask(args) => {
             let workspace: Option<String> = resolve_workspace_path(args.path.as_deref())?
                 .map(|p| p.to_string_lossy().to_string());
             if args.json && args.stream {
-                ask_stream_json(&args.query, workspace.as_deref()).await?;
+                rust_rag_cli::ask_stream_json(&args.query, workspace.as_deref()).await
             } else if args.json {
-                ask_json(&args.query, workspace.as_deref())?;
+                rust_rag_cli::ask_json(&args.query, workspace.as_deref())
             } else if args.stream {
-                ask_stream(&args.query, workspace.as_deref()).await?;
+                rust_rag_cli::ask_stream(&args.query, workspace.as_deref()).await
             } else {
-                ask(&args.query, workspace.as_deref())?;
+                rust_rag_cli::ask(&args.query, workspace.as_deref())
             }
         }
         Command::Download(args) => {
@@ -211,30 +191,21 @@ async fn main() -> Result<()> {
                     .to_string_lossy()
                     .to_string()
             };
-            download_model(&target)?;
+            rust_rag_cli::download_model(&target)
         }
         Command::Symbol(args) => {
             let workspace: Option<String> = resolve_workspace_path(args.path.as_deref())?
                 .map(|p| p.to_string_lossy().to_string());
             if args.json {
-                search_symbol_json(&args.query, workspace.as_deref(), args.kind.clone())?;
+                rust_rag_cli::search_symbol_json(&args.query, workspace.as_deref())
             } else {
-                search_symbol(&args.query, workspace.as_deref(), args.kind.clone())?;
+                rust_rag_cli::search_symbol(&args.query, workspace.as_deref())
             }
         }
         Command::Stats(args) => {
             let workspace: Option<String> = resolve_workspace_path(args.path.as_deref())?
                 .map(|p| p.to_string_lossy().to_string());
-            show_stats(workspace.as_deref(), args.json)?;
-        }
-        Command::Version => {
-            // Print version from Cargo.toml of this crate (inherits workspace version)
-            if let Some(v) = option_env!("CARGO_PKG_VERSION") {
-                println!("rust-rag {}", v);
-            } else {
-                println!("rust-rag unknown");
-            }
+            rust_rag_cli::show_stats(workspace.as_deref(), args.json)
         }
     }
-    Ok(())
 }

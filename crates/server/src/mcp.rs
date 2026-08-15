@@ -1,7 +1,7 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::io::{self, BufRead, Write as IoWrite};
+use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 /// MCP (Model Context Protocol) server over JSON-RPC 2.0 / stdio.
 /// Implements: initialize handshake, notifications/initialized, tools/list, tools/call with JSON Schema validation.
@@ -23,6 +23,7 @@ pub struct JsonRpcRequest {
 pub struct JsonRpcResponse {
     jsonrpc: String,
     result: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<JsonRpcError>,
     #[serde(skip_serializing_if = "Option::is_none")]
     id: Option<Value>,
@@ -92,71 +93,41 @@ fn handle_tools_list(state: &McpState) -> Result<Value> {
         "tools": [
             {
                 "name": "rag_search",
-                "description": "Search for code chunks by semantic similarity. Returns raw relevant snippets without LLM generation. Supports both single and batch queries.",
+                "description": "Search for code by meaning across the entire Rust project. Use this whenever you need to find a function, struct, trait, or any code pattern — especially when you don't know which file it's in. Returns actual code snippets with file paths and line numbers. Prefer this over Grep for semantic/meaning-based searches (e.g., 'command validation', 'UDP transport'). Use Grep only for exact string matching.",
                 "inputSchema": {
                     "type": "object",
-                    "description": "Search parameters - either 'query' (single) or 'queries' (batch) must be provided",
-                    "oneOf": [
-                        {
-                            "type": "object",
-                            "properties": {
-                                "query": { "type": "string", "maxLength": 4096, "description": "The search query" },
-                                "top_k": { "type": "integer", "description": "Number of results to return per query (default 5)", "minimum": 1, "maximum": 100 },
-                                "filters": {
-                                    "type": "object",
-                                    "description": "Optional filters to refine search results",
-                                    "properties": {
-                                        "file_extension": { "type": "string", "description": "Filter by file extension (e.g., \"rs\")" },
-                                        "symbol_kind": { "type": "string", "description": "Filter by symbol kind (e.g., \"function\", \"struct\")" },
-                                        "crates": {
-                                            "type": "array",
-                                            "description": "Filter by crate names",
-                                            "items": { "type": "string" }
-                                        }
-                                    },
-                                    "additionalProperties": false
-                                }
-                            },
-                            "required": ["query"]
+                    "properties": {
+                        "query": { "type": "string", "maxLength": 4096, "description": "What to search for — describe the code you need in natural language (e.g., 'command filter validation', 'UDP socket connection')" },
+                        "queries": {
+                            "type": "array",
+                            "description": "Multiple search queries to execute in batch (alternative to 'query')",
+                            "items": { "type": "string", "maxLength": 4096 },
+                            "minItems": 1,
+                            "maxItems": 10
                         },
-                        {
+                        "top_k": { "type": "integer", "description": "Number of results to return per query (default 5)", "minimum": 1, "maximum": 100 },
+                        "filters": {
                             "type": "object",
+                            "description": "Optional filters to refine search results",
                             "properties": {
-                                "queries": {
+                                "file_extension": { "type": "string", "description": "Filter by file extension (e.g., \"rs\")" },
+                                "symbol_kind": { "type": "string", "description": "Filter by symbol kind (e.g., \"function\", \"struct\")" },
+                                "crates": {
                                     "type": "array",
-                                    "description": "Multiple search queries to execute in batch",
-                                    "items": {
-                                        "type": "string",
-                                        "maxLength": 4096
-                                    },
-                                    "minItems": 1,
-                                    "maxItems": 10
-                                },
-                                "top_k": { "type": "integer", "description": "Number of results to return per query (default 5)", "minimum": 1, "maximum": 100 },
-                                "filters": {
-                                    "type": "object",
-                                    "description": "Optional filters to refine search results (applied to all queries)",
-                                    "properties": {
-                                        "file_extension": { "type": "string", "description": "Filter by file extension (e.g., \"rs\")" },
-                                        "symbol_kind": { "type": "string", "description": "Filter by symbol kind (e.g., \"function\", \"struct\")" },
-                                        "crates": {
-                                            "type": "array",
-                                            "description": "Filter by crate names",
-                                            "items": { "type": "string" }
-                                        }
-                                    },
-                                    "additionalProperties": false
+                                    "description": "Filter by crate names",
+                                    "items": { "type": "string" }
                                 }
                             },
-                            "required": ["queries"]
+                            "additionalProperties": false
                         }
-                    ]
+                    },
+                    "required": []
                 }
             },
 
             {
                 "name": "rag_workspace_info",
-                "description": "Get structured information about the workspace: list of all crates, their paths, dependencies from Cargo.toml, and README.md content.",
+                "description": "Get structured information about the Rust workspace: list of all crates, their paths, dependencies from Cargo.toml, and README.md content. Use this when you need to understand the project structure or find which crate contains what.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -171,7 +142,7 @@ fn handle_tools_list(state: &McpState) -> Result<Value> {
             },
             {
                 "name": "rag_file_read",
-                "description": "Read the full content of a file within the workspace. Path is relative to the workspace root. Optionally specify line_start and line_end to read a specific range.",
+                "description": "Read the full content of a Rust source file in the project. Use this after rag_search finds a relevant file, or when you know exactly which file to read. Returns the complete file content (up to 100KB). Prefer Read for non-project files.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -744,47 +715,67 @@ pub fn rag_file_read_tool(args: &Value) -> Result<Value> {
 
 // ---- Main MCP server loop --------------------------------------------------
 
+/// Maximum allowed size of an incoming JSON-RPC line (1 MiB).
+const MAX_REQUEST_LINE_LEN: usize = 1_048_576;
+
 /// Run the MCP server — reads JSON-RPC requests from stdin, writes responses to stdout.
 pub async fn run_mcp_server(workspace_root: &std::path::Path) -> Result<()> {
     let state = std::sync::Arc::<std::sync::Mutex<McpState>>::new(std::sync::Mutex::new(
         McpState::new(workspace_root),
     ));
 
+    let mut stdin = BufReader::new(tokio::io::stdin());
+    let mut stdout = tokio::io::stdout();
+    let mut line = String::new();
+
     loop {
-        // Read a single line from stdin.
-        let mut line = String::new();
-        match io::stdin().lock().read_line(&mut line) {
+        line.clear();
+        match stdin.read_line(&mut line).await {
             Ok(0) => break, // EOF
-            Ok(_) => {}
-            Err(_) => break,
-        }
-
-        let trimmed = line.trim().to_string();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        // Parse single request or batch.
-        let requests: Vec<JsonRpcRequest> = match serde_json::from_str(&trimmed) {
-            Ok(req) => vec![req], // single request
-            Err(_) => match serde_json::from_str::<Vec<JsonRpcRequest>>(&trimmed) {
-                Ok(batch) => batch, // batch of requests
-                Err(e) => {
-                    let resp = err_response(None, -32700, &format!("Parse error: {}", e));
-                    writeln!(io::stdout(), "{}", serde_json::to_string(&resp).unwrap()).ok();
-                    io::stdout().flush().ok();
+            Ok(_) => {
+                // Check line length to prevent memory exhaustion.
+                if line.len() > MAX_REQUEST_LINE_LEN {
+                    let resp = err_response(None, -32700, "Request too large");
+                    let json = serde_json::to_string(&resp).unwrap();
+                    let _ = stdout.write_all(json.as_bytes()).await;
+                    let _ = stdout.write_all(b"\n").await;
+                    let _ = stdout.flush().await;
                     continue;
                 }
-            },
-        };
 
-        // Dispatch each request.
-        for req in requests {
-            let response = dispatch_request(req, &state).await;
-            if let Some(resp) = response {
-                writeln!(io::stdout(), "{}", serde_json::to_string(&resp).unwrap()).ok();
-                io::stdout().flush().ok();
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+
+                // Parse single request or batch.
+                let requests: Vec<JsonRpcRequest> = match serde_json::from_str(trimmed) {
+                    Ok(req) => vec![req], // single request
+                    Err(_) => match serde_json::from_str::<Vec<JsonRpcRequest>>(trimmed) {
+                        Ok(batch) => batch, // batch of requests
+                        Err(e) => {
+                            let resp = err_response(None, -32700, &format!("Parse error: {}", e));
+                            let json = serde_json::to_string(&resp).unwrap();
+                            let _ = stdout.write_all(json.as_bytes()).await;
+                            let _ = stdout.write_all(b"\n").await;
+                            let _ = stdout.flush().await;
+                            continue;
+                        }
+                    },
+                };
+
+                // Dispatch each request.
+                for req in requests {
+                    let response = dispatch_request(req, &state).await;
+                    if let Some(resp) = response {
+                        let json = serde_json::to_string(&resp).unwrap();
+                        let _ = stdout.write_all(json.as_bytes()).await;
+                        let _ = stdout.write_all(b"\n").await;
+                    }
+                }
+                let _ = stdout.flush().await;
             }
+            Err(_) => break,
         }
     }
 

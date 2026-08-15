@@ -25,69 +25,30 @@ A self-hosted Retrieval-Augmented Generation tool built specifically for analyzi
 - **Configurable via TOML** — `.rustrag.toml` at workspace root controls embedding model path, LLM endpoint/model, top_k, chunk overlap, and semantic cache settings
 
 ## Architecture
+## Architecture
 
-Eleven independent crates in a Cargo workspace:
+RustRag is composed of eleven independent crates that work together to provide a full-featured RAG system.
 
-| Crate | Purpose |
-|-------|---------|
-| `rust-rag-core` | Core engine: indexing (tree-sitter), embedding (fastembed/ONNX), vector store (JSONL + BM25), semantic LLM answer cache, retrieval, call graph analysis, incremental state management, config |
-| `rust-rag-indexer` | AST-aware file indexer with tree-sitter-rust parsing and semantic chunking |
-| `rust-rag-embedding` | ONNX-based embedding computation with fastembed runtime; automatic model download from HuggingFace |
-| `rust-rag-vector-store` | JSONL vector store with BM25 inverted index for hybrid search |
-| `rust-rag-callgraph` | AST-based call edge extraction using rust-analyzer syntax crate |
-| `rust-rag-state` | Incremental indexing state management (SHA-256 file hashes, changed file detection) |
-| `rust-rag-config` | TOML configuration loader with validation for embedding, LLM, and semantic cache settings |
-| `rust-rag-error` | Shared error types (`RagCoreError`) used across all crates |
-| `rust-rag-cli` | CLI binary (`rust-rag`) with subcommands: index, reindex, info, clean, ask, chat, download, symbol, stats |
-| `rust-rag-server` | HTTP API server (axum) and MCP stdio server; exposes search, query, status endpoints; includes rate limiter and bearer auth |
-| `rust-rag-llm` | LLM client abstraction supporting OpenAI-compatible / Ollama backends with SSE streaming support, endpoint validation, DNS rebinding protection, and SSRF strict mode |
+The following diagram illustrates the high-level architecture:
 
-The CLI includes an interactive **chat** subcommand (`rust-rag chat`) that opens a ratatui-based terminal interface with scrollable results, real-time LLM answer pane, and keyboard navigation. The `ask --stream` flag provides programmatic streaming output via SSE for scripting.
-
-## Quick Start
-
-### Before You Start — Index the Workspace
-
-**This is required before any search will work.** RustRAG needs a pre-built index to answer questions.
-
-```bash
-# First time: full index (may take minutes for large codebases)
-./target/release/rust-rag index .
-
-# After code changes: re-index (uses incremental detection — fast)
-./target/release/rust-rag reindex .
+```mermaid
+graph TD
+    A[CLI] --> B[Core Engine]
+    C[HTTP/MCP Server] --> B
+    D[TUI Chat] --> B
+    B --> E[Indexer]
+    B --> F[Embedding]
+    B --> G[Vector Store]
+    B --> H[Call Graph]
+    B --> I[State Management]
+    B --> J[Config]
+    B --> K[Error Types]
+    E --> L[Tree-sitter Rust]
+    F --> M[Fastembed/ONNX]
+    G --> N[BM25 + Cosine Similarity]
+    H --> O[RA AP Syntax]
+    I --> P[SHA-256 File Hashes]
 ```
-
-**Tip:** If you're using Kimi Code or any AI agent with MCP tools, always run `reindex` after making significant changes. The agent won't find anything without an index.
-
-### Prerequisites
-
-- **Rust 1.85+** (MSRV: edition 2021)
-- A running LLM server at the configured endpoint (e.g., Ollama on `localhost:11434`, or llama.cpp with `/chat/completions`)
-- ~127 MB for embedding model (`bge-small-en-v1.5` ONNX)
-
-### Installation
-
-```bash
-cargo build --release
-# Produces: target/release/rust-rag (CLI) and target/release/rust-rag-serve (HTTP/MCP server)
-```
-
-### Configure
-
-Copy the example config to your workspace root:
-
-```bash
-cp .rustrag.toml.example .rustrag.toml
-```
-
-Edit `.rustrag.toml` for your embedding model path, LLM endpoint, and other settings. Environment variables take precedence where applicable (`RUSRAG_MODEL_PATH`, `LLAMA_ENDPOINT`, `LLAMA_MODEL`).
-
-### Index a workspace
-
-```bash
-./target/release/rust-rag index /path/to/cargo/workspace
-
 # Force full re-index (ignores incremental detection)
 ./target/release/rust-rag index --force /path/to/cargo/workspace
 ```
@@ -153,58 +114,43 @@ RUSRAG_WORKSPACE=/workspace/path ./target/release/rust-rag-serve mcp
 
 ### HTTP Endpoints
 
-**GET `/status`** — Workspace metadata (total chunks, index path)
+All endpoints (except `/status`) require Bearer token authentication if `RUSRAG_API_KEY` is set.
+All endpoints enforce per-client rate limiting (default 60 requests per minute).
 
-**POST `/search`** — Hybrid semantic search (accepts JSON body)
-```json
-// Request (Content-Type: application/json)
-{"query": "embedding model initialization", "top_k": 5}
+**GET `/status`** — Workspace metadata
+- Response: `{ "total_chunks": <int>, "endpoint": "<llm_endpoint>" }`
+- No authentication required.
 
-// Response
-{
-  "results": [
-    {
-      "id": "chunk_path/file.rs_42",
-      "file_path": "...",
-      "line_start": 42,
-      "line_end": 50,
-      "module_name": "init_embedding_model",
-      "symbol_kind": "Function",
-      "text": "...",
-      "score": 0.87
-    }
-  ]
-}
-```
+**POST `/search`** — Hybrid semantic search (no LLM)
+- Request (JSON): `{ "query": "<string>", "top_k": <int, optional, default 5> }`
+- Response: `{ "results": [ { "id": "...", "file_path": "...", "line_start": <int>, "line_end": <int>, "module_name": "...", "symbol_kind": "...", "text": "...", "score": <float> } ] }`
+- Errors: 400 (query too long, >4096 chars), 401 (missing/invalid token), 429 (rate limit), 500 (embedding/search failure).
 
-**POST `/query`** — Full RAG with LLM answer and citations (also checks semantic cache)
-```json
-// Request
-{"question": "How does the embedding cache work?"}
+**POST `/query`** — Full RAG with LLM answer and citations (checks semantic cache)
+- Request (JSON): `{ "question": "<string>" }`
+- `top_k` is taken from config (default 5) — not customizable per request.
+- Response (cache miss): `{ "answer": "...", "citations": [ { "file_path": "...", "line_start": <int>, "line_end": <int>, "text": "..." } ], "cached": false }`
+- Response (cache hit): `{ "answer": "...", "citations": [], "cached": true }`
+- Errors: same as `/search`, plus 500 on LLM timeout (120s).
 
-// Response (cache miss — LLM was called)
-{
-  "answer": "The EmbedCache stores...",
-  "citations": [
-    { "file_path": "...", "line_start": 30, "line_end": 45, "text": "..." }
-  ],
-  "cached": false
-}
+**GET `/query/stream`** — Streamed LLM answer via Server-Sent Events (SSE)
+- Query parameters: `question` (string, required), `top_k` (int, optional, default from config)
+- Returns `text/event-stream` with incremental tokens; each chunk is a SSE `data:` message.
+- If semantic cache hit, streams the cached answer as a single SSE message.
+- Errors: same as `/query`, but streamed as SSE error events.
+- Timeout: 5 minutes for the entire streaming session; per-chunk read timeout 60s.
 
-// Response (cache hit — semantic or exact match)
-{
-  "answer": "The EmbedCache stores...",
-  "citations": [],
-  "cached": true
-}
-```
-
-**GET `/query/stream`** — Streamed LLM answer via Server-Sent Events (SSE). Returns incremental text chunks with `text/event-stream` content type. Query params: `question`, `top_k`.
-
+**Example:**
 ```bash
 curl -H 'Accept: text/event-stream' "http://localhost:8090/query/stream?question=How+does+embedding+work"
-# SSE stream of LLM response tokens
 ```
+
+**Error Codes:**
+- `400 Bad Request` — invalid input (query too long, malformed JSON)
+- `401 Unauthorized` — missing or invalid Bearer token (if `RUSRAG_API_KEY` set)
+- `429 Too Many Requests` — rate limit exceeded (per client IP)
+- `404 Not Found` — route not found
+- `500 Internal Server Error` — embedding, search, or LLM failure
 
 
 ### MCP Protocol
@@ -213,13 +159,68 @@ Implements **MCP stdio transport** (protocol version `2024-11-05`) with three to
 
 | Tool | Description | Arguments |
 |------|-------------|-----------|
-| `rag_search` | Search for code chunks by semantic similarity. Returns raw snippets with BM25+vector scores, file paths, line numbers, and metadata | `query` (string, max 4096 chars) — search query; `top_k` (integer, 1–100, default 5) — number of results to return |
+| `rag_search` | Semantic search over indexed code chunks. Supports single or batch queries (up to 10). Returns raw snippets with BM25+vector scores, file paths, line numbers, and metadata. Optional filters by file extension or symbol kind. | `query` (string, max 4096) **or** `queries` (array, 1–10 strings) — search query(s); `top_k` (integer, 1–100, default 5); `filters` (object) — `file_extension` (string), `symbol_kind` (string), `crates` (string array, ignored for now) |
 | `rag_workspace_info` | Get structured information about the workspace: list all crates, their paths, dependencies from Cargo.toml, and README.md content | `detail_level` (`summary` or `full`, optional) — level of detail |
-| `rag_file_read` | Read any file within the workspace by relative path (with directory traversal protection, 100KB limit) | `file_path` (string, required) — relative path from workspace root |
+| `rag_file_read` | Read a file within the workspace by relative path (with directory traversal protection, 100KB limit). Optionally extract a line range. | `file_path` (string, required); `line_start` (integer, optional); `line_end` (integer, optional) |
 
-**Design philosophy**: The MCP tools are designed for **AI coding agents** — they return raw code chunks without requiring an external LLM. Agents (`rag_search`) can analyze the returned code directly. For users who want full RAG answers with LLM-generated responses.
+**Design philosophy**: The MCP tools are designed for **AI coding agents** — they return raw code chunks without requiring an external LLM. Agents (`rag_search`) can analyze the returned code directly.
 
 The MCP server exposes itself over stdio: send JSON-RPC 2.0 requests on stdin and read responses from stdout. Supports `initialize`, `notifications/initialized`, `tools/list`, and `tools/call` methods.
+
+**Examples:**
+
+Single query:
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "rag_search",
+    "arguments": {
+      "query": "embedding model initialization",
+      "top_k": 3
+    }
+  }
+}
+```
+
+Batch query with filters:
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "tools/call",
+  "params": {
+    "name": "rag_search",
+    "arguments": {
+      "queries": ["rate limiter", "SSRF protection"],
+      "top_k": 2,
+      "filters": {
+        "file_extension": "rs",
+        "symbol_kind": "Function"
+      }
+    }
+  }
+}
+```
+
+Read a file with line range:
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "tools/call",
+  "params": {
+    "name": "rag_file_read",
+    "arguments": {
+      "file_path": "crates/server/src/lib.rs",
+      "line_start": 100,
+      "line_end": 120
+    }
+  }
+}
+```
 
 ### Connecting an AI Agent via MCP
 
@@ -258,9 +259,9 @@ Most MCP-compatible IDEs accept a JSON config file or environment variable. For 
 }
 ```
 
-#### Kimi Code (this project!)
+#### Kimi Code 
 
-RustRAG is the MCP tool that powers this very conversation — **you are reading docs generated by an agent powered by RustRAG**. To connect RustRAG to Kimi Code:
+To connect RustRAG to Kimi Code:
 
 1. Run `cargo build --release` to produce `target/release/rust-rag-serve`
 2. **Index the workspace** — run `rust-rag index /path/to/workspace` (or `reindex` to rebuild). The MCP tools won't return results until an index exists.

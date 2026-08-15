@@ -35,6 +35,12 @@ pub struct IndexState {
     /// All chunk IDs that belong to this index state.
     #[serde(default)]
     pub chunk_ids: Vec<String>,
+    /// Total time spent embedding during indexing (in seconds).
+    #[serde(default)]
+    pub embedding_time_seconds: u64,
+    /// Total number of LLM requests made against this index.
+    #[serde(default)]
+    pub llm_requests: u64,
 }
 
 impl IndexState {
@@ -44,6 +50,8 @@ impl IndexState {
             version: 1,
             files: HashMap::new(),
             chunk_ids: Vec::new(),
+            embedding_time_seconds: 0,
+            llm_requests: 0,
         }
     }
 }
@@ -183,6 +191,16 @@ impl IndexState {
     pub fn has_changes(&self, current_files: &HashMap<PathBuf, String>) -> bool {
         let (new_files, changed_files, _) = self.compare(current_files);
         !new_files.is_empty() || !changed_files.is_empty()
+    }
+
+    /// Set the total embedding time spent during indexing.
+    pub fn set_embedding_time(&mut self, seconds: u64) {
+        self.embedding_time_seconds = seconds;
+    }
+
+    /// Increment the LLM request counter.
+    pub fn increment_llm_requests(&mut self) {
+        self.llm_requests += 1;
     }
 }
 

@@ -22,3 +22,14 @@ model = ""
 
 # Number of top results to return when querying (default: 5).
 top_k = 5
+
+# Automatically check for file changes and reindex before ask/chat if true.
+# Useful for real-time usage but may increase indexing overhead.
+auto_reindex = false
+
+[semantic_cache]
+# Enable semantic caching of LLM answers (default: false)
+enabled = false
+
+# Time-to-live in seconds for cached entries (default: 3600 = 1 hour)
+ttl_secs = 3600

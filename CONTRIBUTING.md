@@ -4,7 +4,7 @@ Thank you for your interest in contributing! This document covers everything you
 
 ## Prerequisites
 
-- **Rust**: `>=1.85` (MSRV, set in `Cargo.toml`)
+- **Rust**: `>=1.88` (MSRV, set in `Cargo.toml`)
 - **pnpm**: Not required for RustRag itself, but used by parent project if developing alongside
 - **ONNX Runtime**: Automatically downloaded on first run (~127 MB) or pre-download via `cargo run -- download`
 
@@ -151,7 +151,7 @@ mod tests {
 
 1. Add to the appropriate crate's `Cargo.toml`
 2. Run `cargo update --package <crate>` (not `cargo update` — keeps lockfile stable)
-3. Ensure the dependency is compatible with MSRV 1.85
+3. Ensure the dependency is compatible with MSRV 1.88
 4. Document why the dependency is needed in a code comment if non-obvious
 
 ## Submitting a PR

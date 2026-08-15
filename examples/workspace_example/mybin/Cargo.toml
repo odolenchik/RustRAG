@@ -1,0 +1,13 @@
+[package]
+name = "mybin"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "mybin"
+path = "src/main.rs"
+
+[dependencies]
+mylib = { path = "../mylib" }
+serde = { version = "1.0", features = ["derive"] }
+reqwest = { version = "0.12", features = ["blocking", "json"] }

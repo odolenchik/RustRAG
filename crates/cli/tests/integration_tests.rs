@@ -319,7 +319,7 @@ fn test_search_symbol_finds_function() {
     rust_rag::index_workspace(dir.path().to_str().unwrap()).expect("should index");
 
     // Search for a known symbol name.
-    let result = rust_rag::search_symbol("add", Some(dir.path().to_str().unwrap()));
+    let result = rust_rag::search_symbol("add", Some(dir.path().to_str().unwrap()), None);
     assert!(result.is_ok(), "search_symbol succeeded");
 }
 
@@ -484,7 +484,7 @@ fn test_search_symbol_json_output() {
 
     rust_rag::index_workspace(dir.path().to_str().unwrap()).expect("should index");
 
-    let result = rust_rag::search_symbol_json("add", Some(dir.path().to_str().unwrap()));
+    let result = rust_rag::search_symbol_json("add", Some(dir.path().to_str().unwrap()), None);
     assert!(result.is_ok(), "search_symbol_json succeeded");
 }
 

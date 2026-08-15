@@ -40,7 +40,7 @@ fn init_embedder() -> Result<TextEmbedding, RagCoreError> {
         )),
     };
 
-    println!("Model not found, downloading from HuggingFace...");
+    eprintln!("Model not found, downloading from HuggingFace...");
     if let Err(e) = download_model(&hf_target) {
         return Err(RagCoreError::Embedding(
             format!("Failed to auto-download model: {}\n\nPlease try manually:\n  rust-rag download ~/.cache/huggingface/hub/", e),
@@ -48,7 +48,7 @@ fn init_embedder() -> Result<TextEmbedding, RagCoreError> {
         ));
     }
 
-    println!("Model downloaded. Trying again...");
+    eprintln!("Model downloaded. Trying again...");
     try_init_embedder(&hf_target).map_err(|e| {
         RagCoreError::Embedding(
             "Failed to load embedding model after download".to_string(),
@@ -388,7 +388,7 @@ pub fn download_model(target: &Path) -> Result<(), RagCoreError> {
     std::fs::create_dir_all(target)?;
 
     for &(remote_path, local_name) in &files {
-        println!("Downloading {}...", remote_path);
+        eprintln!("Downloading {}...", remote_path);
         let url = format!("https://huggingface.co/{}/resolve/{}", repo, remote_path);
 
         let response = client.get(&url).send().map_err(|e| {
@@ -414,12 +414,12 @@ pub fn download_model(target: &Path) -> Result<(), RagCoreError> {
                 && !ct.contains("application/octet-stream")
                 && !ct.contains("x-application")
             {
-                println!(
+                eprintln!(
                     "  [warning] model.onnx returned Content-Type: {} (expected application/octet-stream)",
                     ct
                 );
             } else if (local_name.ends_with(".json")) && !ct.contains("application/json") {
-                println!(
+                eprintln!(
                     "  [warning] {} returned Content-Type: {} (expected application/json)",
                     local_name, ct
                 );
@@ -439,14 +439,14 @@ pub fn download_model(target: &Path) -> Result<(), RagCoreError> {
                     Box::new(std::io::Error::other("checksum")),
                 ));
             } else {
-                println!("  ✓ Checksum OK");
+                eprintln!("  ✓ Checksum OK");
             }
         }
 
         std::fs::write(target.join(local_name), &bytes)?;
     }
 
-    println!("Model files saved to: {}", target.display());
+    eprintln!("Model files saved to: {}", target.display());
     Ok(())
 }
 

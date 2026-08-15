@@ -165,7 +165,7 @@ async fn run_mcp(workspace_path: Option<&str>, port: Option<u16>) -> Result<()> 
             });
         }
     } else {
-        println!("Starting RustRAG MCP server (stdio)");
+        eprintln!("Starting RustRAG MCP server (stdio)");
         rust_rag_server::mcp::run_mcp_server(&workspace_root).await?;
     }
     Ok(())

@@ -12,7 +12,7 @@ use std::os::unix::fs::PermissionsExt;
 use rust_rag_indexer::Chunk;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::io::{Read, Seek, Write};
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::RwLock;
 
@@ -133,24 +133,10 @@ impl VectorStore {
             Self::restrict_file_permissions(&index_path);
         }
 
-        let mut file = std::fs::OpenOptions::new()
-            .read(true)
+        let file = std::fs::OpenOptions::new()
             .append(true)
             .create(true)
             .open(index_path)?;
-
-        // Ensure that we start on a new line if the file is not empty and does not end with a newline.
-        if file.metadata()?.len() > 0 {
-            let mut buffer = [0; 1];
-            file.seek(std::io::SeekFrom::End(-1))?;
-            file.read_exact(&mut buffer)?;
-            if buffer[0] != b'\n' {
-                file.write_all(b"\n")?;
-            }
-            // Seek back to the end for appending
-            file.seek(std::io::SeekFrom::End(0))?;
-        }
-
         let mut writer = std::io::BufWriter::new(file);
         for doc in documents {
             let value = serde_json::json!({
@@ -170,6 +156,8 @@ impl VectorStore {
 
         Ok(())
     }
+
+    /// Remove documents matching the given IDs from index.jsonl (atomic replace).
     pub fn remove_documents(&self, ids: &[String]) -> Result<(), RagCoreError> {
         if ids.is_empty() {
             return Ok(());

@@ -15,21 +15,18 @@ pub const DEFAULT_TTL_SECS: u64 = 3600;
 pub struct Config {
     /// Embedding model and chunking settings.
     #[serde(default)]
-    pub embedding: EmbedingConfig,
+    pub embedding: EmbeddingConfig,
     /// LLM endpoint and model name settings.
     #[serde(default)]
     pub llm: LlmConfig,
     /// Semantic cache configuration for caching LLM answers.
     #[serde(default)]
     pub semantic_cache: SemanticCacheConfig,
-    /// Automatically check for file changes and reindex before ask/chat if true.
-    #[serde(default)]
-    pub auto_reindex: bool,
 }
 
 /// Configuration for the embedding model pipeline.
 #[derive(Debug, Deserialize, Default)]
-pub struct EmbedingConfig {
+pub struct EmbeddingConfig {
     /// Path to the ONNX model directory (overrides env/config lookup).
     pub model_path: Option<String>,
 
@@ -38,7 +35,7 @@ pub struct EmbedingConfig {
     pub chunk_overlap: usize,
 }
 
-impl EmbedingConfig {
+impl EmbeddingConfig {
     /// Validate the configuration values.
     ///
     /// # Returns
@@ -141,14 +138,14 @@ impl Config {
 
         let content = std::fs::read_to_string(&config_path).map_err(|e| {
             RagCoreError::Config(Box::new(std::io::Error::other(format!(
-                "reading '{} config file': {}",
+                "reading '{}': {}",
                 config_path.display(),
                 e
             ))))
         })?;
         let config: Config = toml::from_str(&content).map_err(|e| {
             RagCoreError::Config(Box::new(std::io::Error::other(format!(
-                "parsing '{} config file': {}",
+                "parsing '{}': {}",
                 config_path.display(),
                 e
             ))))
@@ -168,7 +165,7 @@ impl Config {
     }
 
     /// Return a reference to the embedding configuration.
-    pub fn embedding_config(&self) -> &EmbedingConfig {
+    pub fn embedding_config(&self) -> &EmbeddingConfig {
         &self.embedding
     }
 
@@ -180,11 +177,6 @@ impl Config {
     /// Return a reference to the semantic cache configuration.
     pub fn semantic_cache_config(&self) -> &SemanticCacheConfig {
         &self.semantic_cache
-    }
-
-    /// Return auto_reindex flag.
-    pub fn auto_reindex(&self) -> bool {
-        self.auto_reindex
     }
 
     /// Validate all configuration values.
