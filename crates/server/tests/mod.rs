@@ -87,19 +87,19 @@ fn test_trim_context_ellipsis_on_overflow() {
 #[test]
 fn test_rate_limiter_allows_within_budget() {
     let limiter = RateLimiter::new(5); // 5 requests per minute
-    assert!(limiter.check("client-1"));
-    assert!(limiter.check("client-1"));
-    assert!(limiter.check("client-1"));
+    assert!(limiter.check("client-1").unwrap());
+    assert!(limiter.check("client-1").unwrap());
+    assert!(limiter.check("client-1").unwrap());
 }
 
 #[test]
 fn test_rate_limiter_rejects_over_budget() {
     let limiter = RateLimiter::new(3); // 3 requests per minute
-    assert!(limiter.check("x"));
-    assert!(limiter.check("x"));
-    assert!(limiter.check("x"));
+    assert!(limiter.check("x").unwrap());
+    assert!(limiter.check("x").unwrap());
+    assert!(limiter.check("x").unwrap());
     assert!(
-        !limiter.check("x"),
+        !limiter.check("x").unwrap(),
         "should be rejected after budget exhausted"
     );
 }
@@ -108,17 +108,17 @@ fn test_rate_limiter_rejects_over_budget() {
 fn test_rate_limiter_independent_per_client() {
     let limiter = RateLimiter::new(2);
     // alice uses her full budget.
-    assert!(limiter.check("alice"));
-    assert!(limiter.check("alice"));
+    assert!(limiter.check("alice").unwrap());
+    assert!(limiter.check("alice").unwrap());
     // bob is independent — his own budget untouched.
-    assert!(limiter.check("bob"));
+    assert!(limiter.check("bob").unwrap());
     // alice exhausted, should be rejected.
     assert!(
-        !limiter.check("alice"),
+        !limiter.check("alice").unwrap(),
         "alice should be rejected after 2 requests"
     );
     // bob still has one slot left.
-    assert!(limiter.check("bob"), "bob should still be allowed");
+    assert!(limiter.check("bob").unwrap(), "bob should still be allowed");
 }
 
 #[test]

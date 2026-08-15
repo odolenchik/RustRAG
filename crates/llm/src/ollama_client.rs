@@ -156,7 +156,7 @@ impl LlmClient {
         base_url: &str,
         model: &str,
         http_client: std::sync::Arc<reqwest::Client>,
-    ) -> Self {
+    ) -> Result<Self, anyhow::Error> {
         let url = if !base_url.starts_with("http") {
             format!("http://{}/chat/completions", base_url)
         } else if base_url.ends_with("/chat/completions")
@@ -169,11 +169,11 @@ impl LlmClient {
             format!("{}/chat/completions", base_url)
         };
 
-        LlmClient {
-            base_url: url.parse().expect("Invalid base URL"),
+        Ok(LlmClient {
+            base_url: url.parse()?,
             model: model.to_string(),
             http_client,
-        }
+        })
     }
 
     /// Create LlmClient using the configuration file (.rustrag.toml) or environment variables.
@@ -245,7 +245,7 @@ impl LlmClient {
         system_prompt: &str,
         user_message: &str,
     ) -> Result<String> {
-        let client = LlmClient::new_with_http_client(endpoint, model, http_client);
+        let client = LlmClient::new_with_http_client(endpoint, model, http_client)?;
         client.complete(system_prompt, user_message).await
     }
 }

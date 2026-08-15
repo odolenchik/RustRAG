@@ -170,6 +170,7 @@ impl VectorStore {
 
         Ok(())
     }
+    /// Remove documents from the vector store by their IDs.
     pub fn remove_documents(&self, ids: &[String]) -> Result<(), RagCoreError> {
         if ids.is_empty() {
             return Ok(());

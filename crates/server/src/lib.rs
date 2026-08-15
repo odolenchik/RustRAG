@@ -40,10 +40,10 @@ impl RateLimiter {
     }
 
     /// Check whether the given client is allowed. Prunes stale entries first.
-    pub fn check(&self, key: &str) -> bool {
+    pub fn check(&self, key: &str) -> Result<bool, anyhow::Error> {
         let now = Instant::now();
         let window = std::time::Duration::from_secs(self.window_secs);
-        let mut map = self.clients.lock().unwrap();
+        let mut map = self.clients.lock().map_err(|_| anyhow::anyhow!("lock poisoned"))?;
 
         // Clean up expired entries for this client.
         if let Some(queue) = map.get_mut(key) {
@@ -57,13 +57,13 @@ impl RateLimiter {
             // Check against the budget.
             if queue.len() < self.max_per_window {
                 queue.push_back(now);
-                true
+                Ok(true)
             } else {
-                false
+                Ok(false)
             }
         } else {
             map.insert(key.to_string(), [now].into());
-            true
+            Ok(true)
         }
     }
 
@@ -91,13 +91,19 @@ const MAX_QUERY_LENGTH_CHARS: usize = 4096;
 /// Default maximum size (in bytes) of the assembled context sent to the LLM.
 const DEFAULT_MAX_CONTEXT_SIZE: usize = 12_000;
 
+/// Helper to serialize a value to JSON, returning a HTTP 500 error on failure.
+fn json_string<T: serde::Serialize>(value: &T) -> Result<String, (StatusCode, String)> {
+    serde_json::to_string(value)
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".to_string()))
+}
+
 /// Sanitize an error message for exposure over HTTP/MCP by truncating long messages and masking internal paths.
 fn sanitize_error(e: &dyn std::fmt::Display) -> String {
     let msg = format!("{}", e);
     // Truncate to 512 chars to prevent oversized payloads / prompt injection from errors.
     let truncated: String = msg.chars().take(512).collect();
     // Mask internal user paths like `/home/user/.cache/huggingface/...` → `~/.cache/huggingface/...`
-    let masked = truncated.replace(std::env::var("HOME").as_deref().unwrap_or("~"), "~");
+    let masked = truncated.replace(std::env::var("HOME").as_deref().unwrap_or_else(|_| "~"), "~");
     masked
 }
 
@@ -519,42 +525,33 @@ async fn search_handler(
     state: axum::extract::State<AppState>,
     headers: axum::http::HeaderMap,
     Json(params): Json<SearchQueryBody>,
-) -> impl axum::response::IntoResponse {
+) -> Result<impl axum::response::IntoResponse, (StatusCode, String)> {
     // Enforce Bearer token auth when API key is configured
     if let Some(unauth_status) = enforce_auth(&headers, &state.api_key, "/search") {
-        return (
-            unauth_status,
-            serde_json::to_string(&serde_json::json!({"error": "Unauthorized"})).unwrap(),
-        );
+        let json = json_string(&serde_json::json!({"error": "Unauthorized"}))?;
+        return Ok((unauth_status, json));
     }
 
     // Sliding-window rate limit check (per-client IP)
     let client_key = RateLimiter::resolve_key(&headers, "127.0.0.1");
-    if !state.rate_limiter.check(&client_key) {
-        return (
-            StatusCode::TOO_MANY_REQUESTS,
-            serde_json::to_string(&serde_json::json!({"error": "Rate limit exceeded"})).unwrap(),
-        );
+    if !state.rate_limiter.check(&client_key).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))? {
+        let json = json_string(&serde_json::json!({"error": "Rate limit exceeded"}))?;
+        return Ok((StatusCode::TOO_MANY_REQUESTS, json));
     }
 
     // Validate query length to prevent resource exhaustion / prompt injection
     if let Err((_status, msg)) = validate_query_length(&params.query, "query") {
-        return (
-            StatusCode::BAD_REQUEST,
-            serde_json::to_string(&serde_json::json!({"error": msg})).unwrap(),
-        );
+        let json = json_string(&serde_json::json!({"error": msg}))?;
+        return Ok((StatusCode::BAD_REQUEST, json));
     }
 
     let query_embedding =
         match rust_rag_core::embedding::embed(&params.query) {
             Ok(v) => v,
-            Err(e) => return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                serde_json::to_string(
-                    &serde_json::json!({"error": format!("Embed failed: {}", sanitize_error(&e))}),
-                )
-                .unwrap(),
-            ),
+            Err(e) => {
+                let json = json_string(&serde_json::json!({"error": format!("Embed failed: {}", sanitize_error(&e))}))?;
+                return Ok((StatusCode::INTERNAL_SERVER_ERROR, json));
+            }
         };
 
     let results =
@@ -564,18 +561,13 @@ async fn search_handler(
             .hybrid_search(&query_embedding, &params.query, params.top_k, 0.7, None);
 
     match results {
-        Ok(results) => (
-            StatusCode::OK,
-            serde_json::to_string(&serde_json::json!({ "results": results })).unwrap(),
-        ),
+        Ok(results) => {
+            let json = json_string(&serde_json::json!({ "results": results }))?;
+            Ok((StatusCode::OK, json))
+        }
         Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                serde_json::to_string(
-                    &serde_json::json!({"error": format!("Search failed: {}", sanitize_error(&e))}),
-                )
-                .unwrap(),
-            )
+            let json = json_string(&serde_json::json!({"error": format!("Search failed: {}", sanitize_error(&e))}))?;
+            Ok((StatusCode::INTERNAL_SERVER_ERROR, json))
         }
     }
 }
@@ -586,30 +578,24 @@ async fn query_handler(
     state: axum::extract::State<AppState>,
     headers: axum::http::HeaderMap,
     Json(body): Json<QueryBody>,
-) -> impl axum::response::IntoResponse {
+) -> Result<impl axum::response::IntoResponse, (StatusCode, String)> {
     // Enforce Bearer token auth when API key is configured
     if let Some(unauth_status) = enforce_auth(&headers, &state.api_key, "/query") {
-        return (
-            unauth_status,
-            serde_json::to_string(&serde_json::json!({"error": "Unauthorized"})).unwrap(),
-        );
+        let json = json_string(&serde_json::json!({"error": "Unauthorized"}))?;
+        return Ok((unauth_status, json));
     }
 
     // Sliding-window rate limit check (per-client IP)
     let client_key = RateLimiter::resolve_key(&headers, "127.0.0.1");
-    if !state.rate_limiter.check(&client_key) {
-        return (
-            StatusCode::TOO_MANY_REQUESTS,
-            serde_json::to_string(&serde_json::json!({"error": "Rate limit exceeded"})).unwrap(),
-        );
+    if !state.rate_limiter.check(&client_key).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))? {
+        let json = json_string(&serde_json::json!({"error": "Rate limit exceeded"}))?;
+        return Ok((StatusCode::TOO_MANY_REQUESTS, json));
     }
 
     // Validate question length to prevent resource exhaustion / prompt injection
     if let Err((_, msg)) = validate_query_length(&body.question, "question") {
-        return (
-            StatusCode::BAD_REQUEST,
-            serde_json::to_string(&serde_json::json!({"error": msg})).unwrap(),
-        );
+        let json = json_string(&serde_json::json!({"error": msg}))?;
+        return Ok((StatusCode::BAD_REQUEST, json));
     }
 
     let config = rust_rag_core::config::Config::find().unwrap_or_default();
@@ -617,27 +603,21 @@ async fn query_handler(
 
     // Check semantic cache before doing search + LLM call.
     if let Some(cached) = state.semantic_cache.lookup(&body.question) {
-        return (
-            StatusCode::OK,
-            serde_json::to_string(&serde_json::json!({
-                "answer": cached,
-                "citations": Vec::<serde_json::Value>::new(),
-                "cached": true,
-            }))
-            .unwrap(),
-        );
+        let json = json_string(&serde_json::json!({
+            "answer": cached,
+            "citations": Vec::<serde_json::Value>::new(),
+            "cached": true,
+        }))?;
+        return Ok((StatusCode::OK, json));
     }
 
     let query_embedding =
         match rust_rag_core::embedding::embed(&body.question) {
             Ok(v) => v,
-            Err(e) => return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                serde_json::to_string(
-                    &serde_json::json!({"error": format!("Embed failed: {}", sanitize_error(&e))}),
-                )
-                .unwrap(),
-            ),
+            Err(e) => {
+                let json = json_string(&serde_json::json!({"error": format!("Embed failed: {}", sanitize_error(&e))}))?;
+                return Ok((StatusCode::INTERNAL_SERVER_ERROR, json));
+            }
         };
 
     let results = state
@@ -648,13 +628,10 @@ async fn query_handler(
     let results_vec: Vec<_> =
         match results {
             Ok(r) => r,
-            Err(e) => return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                serde_json::to_string(
-                    &serde_json::json!({"error": format!("Search failed: {}", sanitize_error(&e))}),
-                )
-                .unwrap(),
-            ),
+            Err(e) => {
+                let json = json_string(&serde_json::json!({"error": format!("Search failed: {}", sanitize_error(&e))}))?;
+                return Ok((StatusCode::INTERNAL_SERVER_ERROR, json));
+            }
         };
 
     // Build context from search results and trim to max_context_size
@@ -709,14 +686,11 @@ async fn query_handler(
         })
         .collect();
 
-    (
-        StatusCode::OK,
-        serde_json::to_string(&serde_json::json!({
-            "answer": answer_text,
-            "citations": citations,
-        }))
-        .unwrap(),
-    )
+    let json = json_string(&serde_json::json!({
+        "answer": answer_text,
+        "citations": citations,
+    }))?;
+    Ok((StatusCode::OK, json))
 }
 
 #[derive(Debug, Deserialize)]
@@ -738,37 +712,37 @@ async fn query_stream_handler(
     state: axum::extract::State<AppState>,
     headers: axum::http::HeaderMap,
     Query(params): Query<QueryStreamQuery>,
-) -> axum::response::Response {
+) -> Result<axum::response::Response, (StatusCode, String)> {
     // Enforce Bearer token auth when API key is configured
     if let Some(unauth_status) = enforce_auth(&headers, &state.api_key, "/query/stream") {
-        return axum::response::Response::builder()
+        return Ok(axum::response::Response::builder()
             .status(unauth_status)
             .body(Body::empty())
-            .unwrap();
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?);
     }
 
     // Sliding-window rate limit check (per-client IP)
     let client_key = RateLimiter::resolve_key(&headers, "127.0.0.1");
-    if !state.rate_limiter.check(&client_key) {
-        return axum::response::Response::builder()
+    let allowed = state.rate_limiter.check(&client_key).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    if !allowed {
+        return Ok(axum::response::Response::builder()
             .status(axum::http::StatusCode::TOO_MANY_REQUESTS)
             .body(Body::empty())
-            .unwrap();
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?);
     }
 
     // Validate question length to prevent resource exhaustion / prompt injection
     if let Err((_, msg)) = validate_query_length(&params.question, "question") {
-        return axum::response::Response::builder()
+        let body = serde_json::to_string(&serde_json::json!({"error": msg})).unwrap_or_default();
+        return Ok(axum::response::Response::builder()
             .status(axum::http::StatusCode::BAD_REQUEST)
-            .body(Body::from(
-                serde_json::to_string(&serde_json::json!({"error": msg})).unwrap_or_default(),
-            ))
-            .unwrap();
+            .body(Body::from(body))
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?);
     }
 
     // Check semantic cache before doing search + LLM call.
     if let Some(cached) = state.semantic_cache.lookup(&params.question) {
-        return axum::response::Response::builder()
+        return Ok(axum::response::Response::builder()
             .status(axum::http::StatusCode::OK)
             .header("Content-Type", "text/event-stream")
             .header("Cache-Control", "no-cache")
@@ -778,7 +752,7 @@ async fn query_stream_handler(
                     yield Ok::<_, axum::BoxError>(bytes::Bytes::from(chunk.to_vec()));
                 }
             }))
-            .unwrap_or_else(|_| axum::response::Response::new(Body::from("error")));
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?);
     }
 
     let config = rust_rag_core::config::Config::find().unwrap_or_default();
@@ -787,10 +761,10 @@ async fn query_stream_handler(
     let query_embedding = match rust_rag_core::embedding::embed(&params.question) {
         Ok(v) => v,
         Err(_) => {
-            return axum::response::Response::builder()
+            return Ok(axum::response::Response::builder()
                 .status(axum::http::StatusCode::INTERNAL_SERVER_ERROR)
                 .body(Body::empty())
-                .unwrap()
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?);
         }
     };
 
@@ -802,10 +776,10 @@ async fn query_stream_handler(
         {
             Ok(r) => r,
             Err(_) => {
-                return axum::response::Response::builder()
+                return Ok(axum::response::Response::builder()
                     .status(axum::http::StatusCode::INTERNAL_SERVER_ERROR)
                     .body(Body::empty())
-                    .unwrap()
+                    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?);
             }
         };
 
@@ -841,11 +815,18 @@ async fn query_stream_handler(
         let full_answer = std::sync::RwLock::new(String::new());
 
         tokio::spawn(async move {
-            let client = rust_rag_llm::ollama_client::LlmClient::new_with_http_client(
+            let client = match rust_rag_llm::ollama_client::LlmClient::new_with_http_client(
                 &endpoint,
                 &model,
                 http_client,
-            );
+            ) {
+                Ok(c) => c,
+                Err(e) => {
+                    let err_sse = format!("event: error\ndata: {}\n\n", e);
+                    let _ = tx_clone.send(Ok(bytes::Bytes::from(err_sse.into_bytes()))).await;
+                    return;
+                }
+            };
             // Timeout the entire streaming call — prevents leaked SSE connections.
             if tokio::time::timeout(std::time::Duration::from_secs(300), async {
                 let mut stream = client.complete_stream_chunks(system_prompt, &user_message);
@@ -892,7 +873,7 @@ async fn query_stream_handler(
         });
     }
 
-    axum::response::Response::builder()
+    Ok(axum::response::Response::builder()
         .status(axum::http::StatusCode::OK)
         .header("Content-Type", "text/event-stream")
         .header("Cache-Control", "no-cache")
@@ -904,5 +885,5 @@ async fn query_stream_handler(
                 yield item;
             }
         }))
-        .unwrap_or_else(|_| axum::response::Response::new(Body::from("error")))
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?)
 }

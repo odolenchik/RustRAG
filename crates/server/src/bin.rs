@@ -29,10 +29,11 @@ async fn handle_mcp_socket(
                             // Send parse error response
                             let error_response =
                                 err_response(None, -32700, &format!("Parse error: {}", e));
-                            let response_json = serde_json::to_string(&error_response).unwrap();
-                            buf.get_mut().write_all(response_json.as_bytes()).await?;
-                            buf.get_mut().write_all(b"\n").await?;
-                            buf.get_mut().flush().await?;
+                            if let Ok(response_json) = serde_json::to_string(&error_response) {
+                                let _ = buf.get_mut().write_all(response_json.as_bytes()).await;
+                                let _ = buf.get_mut().write_all(b"\n").await;
+                                let _ = buf.get_mut().flush().await;
+                            }
                             continue;
                         }
                     },
@@ -42,18 +43,18 @@ async fn handle_mcp_socket(
                 let mut responses = Vec::new();
                 for req in requests {
                     let response = dispatch_request(req, &state).await;
-                    if let Some(resp) = response {
+                    if let Ok(Some(resp)) = response {
                         responses.push(resp);
                     }
                 }
 
                 // Send response(s)
                 if responses.len() == 1 {
-                    let response_json = serde_json::to_string(&responses[0]).unwrap();
+                    let response_json = serde_json::to_string(&responses[0])?;
                     buf.get_mut().write_all(response_json.as_bytes()).await?;
                     buf.get_mut().write_all(b"\n").await?;
                 } else {
-                    let response_json = serde_json::to_string(&responses).unwrap();
+                    let response_json = serde_json::to_string(&responses)?;
                     buf.get_mut().write_all(response_json.as_bytes()).await?;
                     buf.get_mut().write_all(b"\n").await?;
                 }
@@ -118,7 +119,7 @@ async fn main() -> Result<()> {
 async fn run_server(port: u16, rate_limit: u32) -> Result<()> {
     let workspace_root = std::env::var("RUSRAG_WORKSPACE")
         .map(std::path::PathBuf::from)
-        .unwrap_or(std::env::current_dir().expect("no CWD"));
+        .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
 
     println!("Starting RustRAG server on port {}", port);
     println!(
@@ -145,7 +146,7 @@ async fn run_mcp(workspace_path: Option<&str>, port: Option<u16>) -> Result<()> 
             if let Some(p) = workspace_path {
                 std::path::PathBuf::from(p)
             } else {
-                std::env::current_dir().expect("no CWD")
+                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
             }
         });
 

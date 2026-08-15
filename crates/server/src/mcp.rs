@@ -1,7 +1,7 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 /// MCP (Model Context Protocol) server over JSON-RPC 2.0 / stdio.
 /// Implements: initialize handshake, notifications/initialized, tools/list, tools/call with JSON Schema validation.
@@ -736,10 +736,11 @@ pub async fn run_mcp_server(workspace_root: &std::path::Path) -> Result<()> {
                 // Check line length to prevent memory exhaustion.
                 if line.len() > MAX_REQUEST_LINE_LEN {
                     let resp = err_response(None, -32700, "Request too large");
-                    let json = serde_json::to_string(&resp).unwrap();
-                    let _ = stdout.write_all(json.as_bytes()).await;
-                    let _ = stdout.write_all(b"\n").await;
-                    let _ = stdout.flush().await;
+                    if let Ok(json) = serde_json::to_string(&resp) {
+                        let _ = stdout.write_all(json.as_bytes()).await;
+                        let _ = stdout.write_all(b"\n").await;
+                        let _ = stdout.flush().await;
+                    }
                     continue;
                 }
 
@@ -755,10 +756,11 @@ pub async fn run_mcp_server(workspace_root: &std::path::Path) -> Result<()> {
                         Ok(batch) => batch, // batch of requests
                         Err(e) => {
                             let resp = err_response(None, -32700, &format!("Parse error: {}", e));
-                            let json = serde_json::to_string(&resp).unwrap();
-                            let _ = stdout.write_all(json.as_bytes()).await;
-                            let _ = stdout.write_all(b"\n").await;
-                            let _ = stdout.flush().await;
+                            if let Ok(json) = serde_json::to_string(&resp) {
+                                let _ = stdout.write_all(json.as_bytes()).await;
+                                let _ = stdout.write_all(b"\n").await;
+                                let _ = stdout.flush().await;
+                            }
                             continue;
                         }
                     },
@@ -767,10 +769,11 @@ pub async fn run_mcp_server(workspace_root: &std::path::Path) -> Result<()> {
                 // Dispatch each request.
                 for req in requests {
                     let response = dispatch_request(req, &state).await;
-                    if let Some(resp) = response {
-                        let json = serde_json::to_string(&resp).unwrap();
-                        let _ = stdout.write_all(json.as_bytes()).await;
-                        let _ = stdout.write_all(b"\n").await;
+                    if let Ok(Some(resp)) = response {
+                        if let Ok(json) = serde_json::to_string(&resp) {
+                            let _ = stdout.write_all(json.as_bytes()).await;
+                            let _ = stdout.write_all(b"\n").await;
+                        }
                     }
                 }
                 let _ = stdout.flush().await;
@@ -785,7 +788,7 @@ pub async fn run_mcp_server(workspace_root: &std::path::Path) -> Result<()> {
 pub async fn dispatch_request(
     req: JsonRpcRequest,
     state: &std::sync::Arc<std::sync::Mutex<McpState>>,
-) -> Option<JsonRpcResponse> {
+) -> Result<Option<JsonRpcResponse>> {
     let method = req.method;
     let params = req.params.clone();
     let id = req.id.clone();
@@ -793,9 +796,9 @@ pub async fn dispatch_request(
     // Handle "tools/call" outside the lock since rag_query_tool spawns async work.
     if method == "tools/call" {
         // Clone the path out of the guard so we can release the lock before awaiting.
-        let store_path = state.lock().unwrap().store_path.clone();
+        let store_path = state.lock().map_err(|_| anyhow::anyhow!("Lock poisoned"))?.store_path.clone();
         let result = handle_tools_call(params, &store_path).await;
-        return match result {
+        return Ok(match result {
             Ok(v) => Some(ok_response(id, v)),
             Err(e) => Some(err_response(
                 id,
@@ -805,11 +808,11 @@ pub async fn dispatch_request(
                     e.to_string().chars().take(256).collect::<String>()
                 ),
             )),
-        };
+        });
     }
 
     // All other methods are synchronous — hold the lock for the entire handling.
-    let guard = state.lock().unwrap();
+    let guard = state.lock().map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
     let result: Result<Value> = match method.as_str() {
         "initialize" => {
             if !guard.store_path.join("index.jsonl").exists() {
@@ -819,7 +822,7 @@ pub async fn dispatch_request(
             } else {
                 // Auto-initialize: set the flag after successful initialize handshake.
                 drop(guard);
-                let g = state.lock().unwrap();
+                let g = state.lock().map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
                 g.initialized
                     .store(true, std::sync::atomic::Ordering::SeqCst);
                 Ok(serde_json::json!({
@@ -840,7 +843,7 @@ pub async fn dispatch_request(
         _ => Err(anyhow::anyhow!("Method not found: {}", method)),
     };
 
-    match result {
+    Ok(match result {
         Ok(v) => Some(ok_response(id, v)),
         Err(e) => Some(err_response(
             id,
@@ -850,5 +853,5 @@ pub async fn dispatch_request(
                 e.to_string().chars().take(256).collect::<String>()
             ),
         )),
-    }
+    })
 }
